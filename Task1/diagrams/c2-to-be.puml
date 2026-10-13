@@ -1,0 +1,149 @@
+@startuml
+
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+' ### АКТОРЫ ###
+Person(passenger, "Пассажир", "Заказывает поездки")
+Person(driver, "Водитель", "Принимает заказы, получает выплаты")
+Person(manager, "Корпоративный менеджер", "Управляет счетами")
+Person(accountant, "Бухгалтер", "Контролирует выплаты")
+Person(sre_engineer, "SRE инженер", "Поддерживает надёжность")
+
+System_Boundary(go_future_system, "GoFuture Platform (To-Be)") {
+
+    ' ### КЛИЕНТСКИЕ ПРИЛОЖЕНИЯ ###
+    Container(app_passenger, "Пассажирское приложение", "iOS/Android/Huawei", "Интерфейс пассажира")
+    Container(app_driver, "Водительское приложение", "iOS/Android/Huawei", "Интерфейс водителя")
+    Container(web_portal, "Корпоративный веб-портал", "Web Application", "Управление корпоративными поездками")
+    Container(admin_portal, "Админ-панель", "Web Application", "Операционное управление")
+
+    ' ### ТОЧКА ВХОДА ###
+    System_Boundary(edge, "Edge / Integration") {
+        Container(gateway, "API Gateway / BFF", "Gateway", "Единая точка входа, маршрутизация, версионирование, rate limiting, auth")
+        ContainerQueue(kafka_broker, "Брокер событий", "Apache Kafka", "Единый event-driven backbone: события и задачи")
+    }
+
+    ' ### ДОМЕННЫЕ СЕРВИСЫ ###
+    System_Boundary(services, "Доменные сервисы") {
+        Container(svc_booking, "Booking Service", "Django/Python", "Жизненный цикл поездки, матчинг водителя")
+        Container(svc_driver, "Driver Service", "Django/Python", "Профиль, смены, заработок водителя")
+        Container(svc_pricing, "Pricing Service", "Python", "Расчёт цены, динамическое ценообразование")
+        Container(svc_payments, "Payments Service", "Python", "Приём платежей от пассажиров")
+        Container(svc_payouts, "Payouts Service", "Python", "Выплаты водителям и партнёрам")
+        Container(svc_notification, "Notification Service", "Python", "Push/SMS/email уведомления")
+        Container(svc_geography, "Geography Service", "Python", "Геопоиск, зоны, маршруты, ETA")
+        Container(svc_analytics, "Analytics Service", "Python", "Сбор событий, витрины, ML-фичи")
+        Container(svc_fraud, "Fraud Service", "Python", "Антифрод и риск-скоринг")
+    }
+
+    ' ### ХРАНИЛИЩА (database-per-service) ###
+    System_Boundary(data, "Хранилища (database-per-service)") {
+        ContainerDb(db_booking, "БД Booking", "PostgreSQL", "Бронирования, состояние поездки")
+        ContainerDb(db_driver, "БД Driver", "PostgreSQL", "Водители, смены")
+        ContainerDb(db_pricing, "БД Pricing", "PostgreSQL", "Правила ценообразования, котировки")
+        ContainerDb(db_payments, "БД Payments", "PostgreSQL", "Платежи, транзакции")
+        ContainerDb(db_payouts, "БД Payouts", "PostgreSQL", "Выплаты, балансы")
+        ContainerDb(db_notification, "БД Notification", "PostgreSQL", "Устройства, шаблоны")
+        ContainerDb(db_geography, "БД Geography", "PostgreSQL", "Зоны")
+        ContainerDb(db_geo_index, "Геоиндекс", "Elasticsearch", "Геопоиск водителей")
+        ContainerDb(db_fraud, "БД Fraud", "PostgreSQL", "Правила антифрода, риск-скоры")
+        ContainerDb(db_analytics, "Analytics Store", "ClickHouse", "События и агрегаты")
+        Container(datalens, "DataLens", "BI Tool", "Визуализация бизнес-метрик и отчётов")
+        ContainerDb(db_cache, "Кеш", "Redis", "Кеш цен, устройств, гео")
+    }
+
+    ' ### НАБЛЮДАЕМОСТЬ ###
+    System_Boundary(observability, "Наблюдаемость") {
+        Container(monitoring, "Prometheus", "Monitoring", "Сбор метрик")
+        Container(grafana, "Grafana", "Dashboards", "Визуализация")
+        Container(loki, "Loki", "Logs", "Агрегация логов")
+        Container(tracing, "Jaeger", "Distributed Tracing", "Отображение сквозных трейсов (OpenTelemetry)")
+        Container(alert_manager, "Alertmanager", "Alerting", "Управление алертами")
+    }
+}
+
+' ### ВНЕШНИЕ СИСТЕМЫ ###
+System_Ext(yandex_pay, "Яндекс Пэй", "Платёжный шлюз")
+System_Ext(yandex_maps, "Яндекс Карты", "Картографический сервис")
+System_Ext(fcm, "FCM", "Push Google")
+System_Ext(apns, "APNs", "Push Apple")
+System_Ext(huawei_push, "Huawei Push Kit", "Push Huawei")
+System_Ext(bank_api, "API Банка", "Банковские выплаты")
+
+' ### КЛИЕНТЫ -> ШЛЮЗ ###
+Rel(passenger, app_passenger, "Использует")
+Rel(driver, app_driver, "Использует")
+Rel(manager, web_portal, "Использует")
+Rel(accountant, admin_portal, "Использует")
+Rel(app_passenger, gateway, "Использует стабильный публичный контракт", "HTTPS/REST")
+Rel(app_driver, gateway, "Использует стабильный публичный контракт", "HTTPS/REST")
+Rel(web_portal, gateway, "Использует", "HTTPS/REST")
+Rel(admin_portal, gateway, "Использует", "HTTPS/REST")
+
+' ### ШЛЮЗ -> СЕРВИСЫ (sync, версионирование) ###
+Rel(gateway, svc_booking, "Вызывает", "REST /v1,/v2")
+Rel(gateway, svc_driver, "Вызывает", "REST /v1,/v2")
+Rel(gateway, svc_pricing, "Вызывает", "gRPC/REST")
+Rel(gateway, svc_payments, "Вызывает", "REST /v1,/v2")
+Rel(gateway, svc_geography, "Вызывает", "gRPC/REST")
+
+' ### SYNC МЕЖДУ СЕРВИСАМИ (критичный путь) ###
+Rel(svc_booking, svc_driver, "Назначение водителя", "REST/gRPC")
+Rel(svc_booking, svc_geography, "Геопоиск/ETA", "gRPC")
+Rel(svc_booking, svc_pricing, "Расчёт цены", "gRPC")
+Rel(svc_booking, svc_payments, "Инициация платежа", "REST")
+Rel(svc_payments, svc_fraud, "Проверка транзакции", "REST")
+Rel(svc_payouts, svc_driver, "Данные водителя", "REST/gRPC")
+
+' ### ПУБЛИКАЦИЯ: Transactional Outbox (outbox-таблица -> polling relay внутри сервиса) ###
+Rel(svc_booking, kafka_broker, "Публикует доменные события (outbox)", "Kafka protocol")
+Rel(svc_payments, kafka_broker, "Публикует доменные события (outbox)", "Kafka protocol")
+Rel(svc_payouts, kafka_broker, "Публикует доменные события (outbox)", "Kafka protocol")
+Rel(svc_analytics, kafka_broker, "Публикует доменные события (outbox)", "Kafka protocol")
+
+' ### ПОТРЕБЛЕНИЕ: Kafka -> сервисы ###
+Rel(svc_notification, kafka_broker, "Потребляет доменные события", "Kafka protocol")
+Rel(svc_payouts, kafka_broker, "Потребляет доменные события", "Kafka protocol")
+Rel(svc_analytics, kafka_broker, "Потребляет доменные события", "Kafka protocol")
+
+' ### СЕРВИСЫ -> ХРАНИЛИЩА ###
+Rel(svc_booking, db_booking, "Читает и пишет", "ORM/SQL")
+Rel(svc_driver, db_driver, "Читает и пишет", "ORM/SQL")
+Rel(svc_pricing, db_pricing, "Читает и пишет", "SQL")
+Rel(svc_pricing, db_cache, "Кеш цен")
+Rel(svc_payments, db_payments, "Читает и пишет", "SQL")
+Rel(svc_payouts, db_payouts, "Читает и пишет", "SQL")
+Rel(svc_notification, db_notification, "Читает и пишет", "SQL")
+Rel(svc_notification, db_cache, "Кеш устройств")
+Rel(svc_geography, db_geography, "Читает и пишет", "SQL")
+Rel(svc_geography, db_geo_index, "Геопоиск")
+Rel(svc_geography, db_cache, "Кеш гео")
+Rel(svc_fraud, db_fraud, "Читает и пишет", "SQL")
+Rel(svc_analytics, db_analytics, "Аналитическая запись")
+
+' ### BI (DataLens) ###
+Rel(db_analytics, datalens, "Выполняет аналитические запросы", "SQL")
+Rel(datalens, manager, "Бизнес-отчёты", "Dashboards")
+Rel(datalens, accountant, "Финансовые отчёты", "Dashboards")
+
+' ### ВНЕШНИЕ ИНТЕГРАЦИИ ###
+Rel(svc_payments, yandex_pay, "Платежи", "REST API")
+Rel(svc_geography, yandex_maps, "Геоданные", "REST API")
+Rel(svc_notification, fcm, "Push Android", "REST API")
+Rel(svc_notification, apns, "Push iOS", "REST API")
+Rel(svc_notification, huawei_push, "Push Huawei", "REST API")
+Rel(svc_payouts, bank_api, "Выплаты", "REST API")
+
+' ### НАБЛЮДАЕМОСТЬ ###
+Rel(svc_booking, monitoring, "Метрики", "Prometheus")
+Rel(svc_driver, monitoring, "Метрики", "Prometheus")
+Rel(svc_pricing, monitoring, "Метрики", "Prometheus")
+Rel(svc_payments, monitoring, "Метрики", "Prometheus")
+Rel(svc_geography, monitoring, "Метрики", "Prometheus")
+Rel(monitoring, grafana, "Данные", "PromQL")
+Rel(svc_booking, loki, "Логи", "Loki")
+Rel(svc_booking, tracing, "Трейсы", "OTLP")
+Rel(monitoring, alert_manager, "Алерты", "Alert Rules")
+Rel(alert_manager, sre_engineer, "Оповещения", "Email/Slack/Pager")
+
+@enduml
