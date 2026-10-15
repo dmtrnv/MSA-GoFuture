@@ -9,7 +9,7 @@ Person(manager, "Корпоративный менеджер", "Управляе
 Person(accountant, "Бухгалтер", "Контролирует выплаты")
 Person(sre_engineer, "SRE инженер", "Поддерживает надёжность")
 
-System_Boundary(go_future_system, "GoFuture Platform (To-Be)") {
+System_Boundary(go_future_system, "GoFuture Platform") {
 
     ' ### КЛИЕНТСКИЕ ПРИЛОЖЕНИЯ ###
     Container(app_passenger, "Пассажирское приложение", "iOS/Android/Huawei", "Интерфейс пассажира")
@@ -144,6 +144,6 @@ Rel(monitoring, grafana, "Данные", "PromQL")
 Rel(svc_booking, loki, "Логи", "Loki")
 Rel(svc_booking, tracing, "Трейсы", "OTLP")
 Rel(monitoring, alert_manager, "Алерты", "Alert Rules")
-Rel(alert_manager, sre_engineer, "Оповещения", "Email/Slack/Pager")
+Rel(alert_manager, sre_engineer, "Оповещения", "Email/Telegram")
 
 @enduml

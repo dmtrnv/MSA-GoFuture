@@ -3,7 +3,6 @@
 - **Автор:** Дмитрий Ренев
 - **Статус:** На согласовании
 - **Согласующие:** Дмитрий Бардин
-- **Этап плана декомпозиции:** сквозное решение
 - **Дата:** 2026-10-12
 - **Связанные артефакты:** [ADR-002-service-map-and-c2.md](../adr/ADR-002-service-map-and-c2.md), [ADR-003-extraction-order.md](../adr/ADR-003-extraction-order.md), [ADR-004-backward-compatibility.md](../adr/ADR-004-backward-compatibility.md), [ADR-005-data-migration-plan.md](../adr/ADR-005-data-migration-plan.md), [c2-to-be.puml](../diagrams/c2-to-be.puml)
 

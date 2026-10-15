@@ -1,0 +1,248 @@
+@startuml
+
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+' ### АКТОРЫ ###
+Person(passenger, "Пассажир", "Заказывает поездки")
+Person(driver, "Водитель", "Принимает заказы, получает выплаты")
+Person(manager, "Корпоративный менеджер", "Управляет счетами")
+Person(accountant, "Бухгалтер", "Контролирует выплаты")
+Person(sre_engineer, "SRE инженер", "Поддерживает надёжность")
+
+System_Boundary(go_future_system, "GoFuture Platform") {
+
+    ' ### КЛИЕНТСКИЕ ПРИЛОЖЕНИЯ ###
+    Container(app_passenger, "Пассажирское приложение", "iOS/Android/Huawei", "Интерфейс пассажира")
+    Container(app_driver, "Водительское приложение", "iOS/Android/Huawei", "Интерфейс водителя")
+    Container(web_portal, "Корпоративный веб-портал", "Web Application", "Управление корпоративными поездками")
+    Container(admin_portal, "Админ-панель", "Web Application", "Операционное управление")
+
+    ' ### ТОЧКА ВХОДА ###
+    System_Boundary(edge, "Edge / Integration") {
+        Container(gateway, "API Gateway / BFF", "Gateway", "Единая точка входа, маршрутизация, версионирование, rate limiting, auth")
+    }
+
+    ' ### СОБЫТИЙНАЯ ПЛАТФОРМА ###
+    System_Boundary(event_platform, "Событийная платформа") {
+
+        ContainerQueue(kafka_broker, "Kafka Cluster", "Apache Kafka", "Backbone событий; region-aware partitioner; replication=3")
+        Container(schema_registry, "Schema Registry", "Avro", "Контракты событий: регистрация схем продюсерами, выдача schema ID, режим BACKWARD")
+
+        ' Ключевые топики (партиционирование по regionId:aggregateId)
+        System_Boundary(topics, "Ключевые топики Kafka (partition key = regionId:aggregateId)") {
+            ContainerQueue(topic_booking_events, "booking.booking.events.v1", "Kafka Topic", "BookingCreated, BookingConfirmed, TripStarted, TripCompleted, BookingCancelled")
+            ContainerQueue(topic_driver_events, "driver.driver.events.v1", "Kafka Topic", "DriverAssigned, DriverStatusChanged, ShiftStarted/Ended")
+            ContainerQueue(topic_driver_location, "driver.driver.location.v1", "Kafka Topic", "DriverLocationUpdated")
+            ContainerQueue(topic_pricing_events, "pricing.pricing.events.v1", "Kafka Topic", "PriceQuoted, SurgeMultiplierUpdated")
+            ContainerQueue(topic_payments_events, "payments.payment.events.v1", "Kafka Topic", "PaymentAuthorized, PaymentCaptured, PaymentFailed")
+            ContainerQueue(topic_payouts_events, "payouts.payout.events.v1", "Kafka Topic", "PayoutInitiated, PayoutCompleted")
+            ContainerQueue(topic_fraud_events, "fraud.fraud.events.v1", "Kafka Topic", "FraudDetected, RiskScored")
+            ContainerQueue(topic_commands, "*.commands.v1", "Kafka Topic", "Команды Saga: PaymentAuthorizeRequested, DriverAssignmentRequested")
+            ContainerQueue(topic_retry_dlq, "*.retry / *.dlq", "Kafka Topic", "Ретраи с backoff и Dead Letter")
+        }
+
+        Container(flink, "Stream Processing", "Apache Flink / Python", "Stateful/windowed: surge-цены, hot-zones, сессии поездки")
+    }
+
+    ' ### ДОМЕННЫЕ СЕРВИСЫ ###
+    System_Boundary(services, "Доменные сервисы") {
+        Container(svc_booking, "Booking Service", "Django/Python", "Жизненный цикл поездки, матчинг; содержит компонент Saga Orchestrator (оркестрация саги поездки и выплат, компенсации, таймауты)")
+        Container(svc_driver, "Driver Service", "Django/Python", "Профиль, смены, заработок водителя")
+        Container(svc_pricing, "Pricing Service", "Python", "Расчёт цены, динамическое ценообразование")
+        Container(svc_payments, "Payments Service", "Python", "Приём платежей от пассажиров")
+        Container(svc_payouts, "Payouts Service", "Python", "Выплаты водителям и партнёрам")
+        Container(svc_notification, "Notification Service", "Python", "Push/SMS/email уведомления")
+        Container(svc_geography, "Geography Service", "Python", "Геопоиск, зоны, маршруты, ETA")
+        Container(svc_analytics, "Analytics Service", "Python", "Сбор событий, витрины, ML-фичи")
+        Container(svc_fraud, "Fraud Service", "Python", "Антифрод и риск-скоринг")
+    }
+
+    ' ### ХРАНИЛИЩА (database-per-service) ###
+    System_Boundary(data, "Хранилища (database-per-service)") {
+        ContainerDb(db_booking, "БД Booking", "PostgreSQL", "Бронирования, состояние поездки, outbox, saga_state")
+        ContainerDb(db_driver, "БД Driver", "PostgreSQL", "Водители, смены, outbox")
+        ContainerDb(db_pricing, "БД Pricing", "PostgreSQL", "Правила ценообразования, котировки")
+        ContainerDb(db_payments, "БД Payments", "PostgreSQL", "Платежи, транзакции, outbox")
+        ContainerDb(db_payouts, "БД Payouts", "PostgreSQL", "Выплаты, балансы, outbox")
+        ContainerDb(db_notification, "БД Notification", "PostgreSQL", "Устройства, шаблоны")
+        ContainerDb(db_geography, "БД Geography", "PostgreSQL", "Зоны")
+        ContainerDb(db_geo_index, "Геоиндекс", "Elasticsearch", "Геопоиск водителей")
+        ContainerDb(db_fraud, "БД Fraud", "PostgreSQL", "Правила антифрода, риск-скоры")
+        ContainerDb(db_analytics, "Analytics Store", "ClickHouse", "События и агрегаты")
+        Container(datalens, "DataLens", "BI Tool", "Визуализация бизнес-метрик и отчётов")
+        ContainerDb(db_cache, "Кеш", "Redis", "Кеш цен, устройств, гео, схем событий")
+    }
+
+    ' ### НАБЛЮДАЕМОСТЬ ###
+    System_Boundary(observability, "Наблюдаемость") {
+        Container(otel_collector, "OpenTelemetry Collector", "OTel", "Прикладная телеметрия: приём OTLP (сервисы, Flink), скрейп ClickHouse /metrics, prometheusexporter")
+        Container(kafka_lag_exporter, "Kafka Metrics Exporter", "Kafka Exporter", "Consumer lag, offset, throughput, партиции")
+        Container(postgres_exporter, "Postgres Exporter", "postgres_exporter", "Метрики всех БД PostgreSQL: connections, replication lag, slow queries")
+        Container(redis_exporter, "Redis Exporter", "redis_exporter", "Метрики Redis: memory, evictions, hit/miss, clients, replication")
+        Container(es_exporter, "Elasticsearch Exporter", "elasticsearch_exporter", "Метрики ES: cluster health, JVM, thread pools, shards, latency")
+        Container(jmx_exporter, "JMX Exporter", "jmx_exporter", "JMX-метрики Schema Registry (JVM): запросы, ошибки, схемы")
+        Container(monitoring, "Prometheus", "Monitoring", "Хранилище метрик; скрейпит инфра-экспортеры напрямую и OTel Collector; SLI/SLO правила")
+        Container(grafana, "Grafana", "Dashboards", "Дашборды: SLO/error budget, lag, DLQ, outbox, Flink")
+        Container(loki, "Loki", "Logs", "Агрегация логов")
+        Container(tracing, "Jaeger", "Distributed Tracing", "Сквозные трейсы событий и саг (OpenTelemetry)")
+        Container(alert_manager, "Alertmanager", "Alerting", "Мультиоконные burn-rate алерты, lag/DLQ/Flink")
+    }
+}
+
+' ### ВНЕШНИЕ СИСТЕМЫ ###
+System_Ext(yandex_pay, "Яндекс Пэй", "Платёжный шлюз")
+System_Ext(yandex_maps, "Яндекс Карты", "Картографический сервис")
+System_Ext(fcm, "FCM", "Push Google")
+System_Ext(apns, "APNs", "Push Apple")
+System_Ext(huawei_push, "Huawei Push Kit", "Push Huawei")
+System_Ext(bank_api, "API Банка", "Банковские выплаты")
+
+' ### КЛИЕНТЫ -> ШЛЮЗ ###
+Rel(passenger, app_passenger, "Использует")
+Rel(driver, app_driver, "Использует")
+Rel(manager, web_portal, "Использует")
+Rel(accountant, admin_portal, "Использует")
+Rel(app_passenger, gateway, "Использует стабильный публичный контракт", "HTTPS/REST")
+Rel(app_driver, gateway, "Использует стабильный публичный контракт", "HTTPS/REST")
+Rel(web_portal, gateway, "Использует", "HTTPS/REST")
+Rel(admin_portal, gateway, "Использует", "HTTPS/REST")
+
+' ### ШЛЮЗ -> СЕРВИСЫ (sync, версионирование) ###
+Rel(gateway, svc_booking, "Вызывает", "REST /v1,/v2")
+Rel(gateway, svc_driver, "Вызывает", "REST /v1,/v2")
+Rel(gateway, svc_pricing, "Вызывает", "gRPC/REST")
+Rel(gateway, svc_payments, "Вызывает", "REST /v1,/v2")
+Rel(gateway, svc_geography, "Вызывает", "gRPC/REST")
+
+' ### SYNC МЕЖДУ СЕРВИСАМИ (критичный путь) ###
+Rel(svc_booking, svc_driver, "Назначение водителя", "REST/gRPC")
+Rel(svc_booking, svc_geography, "Геопоиск/ETA", "gRPC")
+Rel(svc_booking, svc_pricing, "Расчёт цены", "gRPC")
+Rel(svc_payments, svc_fraud, "Проверка транзакции", "REST")
+Rel(svc_payouts, svc_driver, "Данные водителя", "REST/gRPC")
+
+' ### САГА (Saga Orchestrator - компонент Booking Service) ###
+Rel(svc_booking, topic_commands, "Отправляет команды саги", "Kafka")
+Rel(svc_booking, topic_payments_events, "Потребляет результаты шагов саги", "Kafka")
+Rel(svc_booking, topic_pricing_events, "Потребляет результаты шагов саги", "Kafka")
+Rel(svc_booking, topic_driver_events, "Потребляет результаты шагов саги", "Kafka")
+Rel(svc_booking, topic_fraud_events, "Потребляет результаты шагов саги", "Kafka")
+
+' ### ПУБЛИКАЦИЯ: Transactional Outbox -> Kafka ###
+Rel(svc_booking, topic_booking_events, "Публикует (outbox)", "Kafka")
+Rel(svc_driver, topic_driver_events, "Публикует (outbox)", "Kafka")
+Rel(svc_driver, topic_driver_location, "Публикует (outbox)", "Kafka")
+Rel(svc_pricing, topic_pricing_events, "Публикует (outbox)", "Kafka")
+Rel(svc_payments, topic_payments_events, "Публикует (outbox)", "Kafka")
+Rel(svc_payouts, topic_payouts_events, "Публикует (outbox)", "Kafka")
+Rel(svc_fraud, topic_fraud_events, "Публикует (outbox)", "Kafka")
+
+' ### ПОТРЕБЛЕНИЕ: Kafka -> сервисы (хореография) ###
+Rel(svc_notification, topic_booking_events, "Потребляет", "Kafka")
+Rel(svc_notification, topic_driver_events, "Потребляет", "Kafka")
+Rel(svc_notification, topic_payouts_events, "Потребляет", "Kafka")
+Rel(svc_analytics, topic_booking_events, "Потребляет", "Kafka")
+Rel(svc_analytics, topic_driver_events, "Потребляет", "Kafka")
+Rel(svc_analytics, topic_driver_location, "Потребляет", "Kafka")
+Rel(svc_analytics, topic_pricing_events, "Потребляет", "Kafka")
+Rel(svc_analytics, topic_payments_events, "Потребляет", "Kafka")
+Rel(svc_analytics, topic_payouts_events, "Потребляет", "Kafka")
+Rel(svc_analytics, topic_fraud_events, "Потребляет", "Kafka")
+Rel(svc_fraud, topic_booking_events, "Потребляет", "Kafka")
+Rel(svc_fraud, topic_payments_events, "Потребляет", "Kafka")
+Rel(svc_payouts, topic_payments_events, "Потребляет", "Kafka")
+Rel(svc_payouts, topic_driver_events, "Потребляет", "Kafka")
+Rel(svc_geography, topic_driver_location, "Потребляет", "Kafka")
+Rel(svc_payments, topic_fraud_events, "Потребляет", "Kafka")
+Rel(svc_driver, topic_commands, "Потребляет команды matching", "Kafka")
+
+' ### ПОТОКОВАЯ ОБРАБОТКА ###
+Rel(flink, topic_driver_location, "Потребляет гео-поток", "Kafka")
+Rel(flink, topic_booking_events, "Потребляет события брони", "Kafka")
+Rel(flink, topic_pricing_events, "Публикует SurgeMultiplierUpdated", "Kafka")
+
+' ### РЕГИСТР СХЕМ ###
+' Клиенты (продюсеры регистрируют схему и получают schema ID; потребители резолвят её по ID и кешируют)
+Rel(services, schema_registry, "Регистрирует схемы и получает их по schema ID (сервисы + Flink)", "Registry API")
+
+' ### СЕРВИСЫ -> ХРАНИЛИЩА ###
+Rel(svc_booking, db_booking, "Читает и пишет", "ORM/SQL")
+Rel(svc_driver, db_driver, "Читает и пишет", "ORM/SQL")
+Rel(svc_pricing, db_pricing, "Читает и пишет", "SQL")
+Rel(svc_pricing, db_cache, "Кеш цен, схем событий")
+Rel(svc_payments, db_payments, "Читает и пишет", "SQL")
+Rel(svc_payouts, db_payouts, "Читает и пишет", "SQL")
+Rel(svc_notification, db_notification, "Читает и пишет", "SQL")
+Rel(svc_notification, db_cache, "Кеш устройств, схем событий")
+Rel(svc_geography, db_geography, "Читает и пишет", "SQL")
+Rel(svc_geography, db_geo_index, "Геопоиск")
+Rel(svc_geography, db_cache, "Кеш гео, схем событий")
+Rel(svc_fraud, db_fraud, "Читает и пишет", "SQL")
+Rel(svc_analytics, db_analytics, "Аналитическая запись")
+
+' ### КЕШ СХЕМ СОБЫТИЙ (сервисы, ходящие в Schema Registry, кешируют схемы в Redis) ###
+Rel(svc_booking, db_cache, "Кеш схем событий")
+Rel(svc_driver, db_cache, "Кеш схем событий")
+Rel(svc_payments, db_cache, "Кеш схем событий")
+Rel(svc_payouts, db_cache, "Кеш схем событий")
+Rel(svc_fraud, db_cache, "Кеш схем событий")
+Rel(svc_analytics, db_cache, "Кеш схем событий")
+
+' ### BI (DataLens) ###
+Rel(db_analytics, datalens, "Выполняет аналитические запросы", "SQL")
+Rel(datalens, manager, "Бизнес-отчёты", "Dashboards")
+Rel(datalens, accountant, "Финансовые отчёты", "Dashboards")
+
+' ### ВНЕШНИЕ ИНТЕГРАЦИИ ###
+Rel(svc_payments, yandex_pay, "Платежи", "REST API")
+Rel(svc_geography, yandex_maps, "Геоданные", "REST API")
+Rel(svc_notification, fcm, "Push Android", "REST API")
+Rel(svc_notification, apns, "Push iOS", "REST API")
+Rel(svc_notification, huawei_push, "Push Huawei", "REST API")
+Rel(svc_payouts, bank_api, "Выплаты", "REST API")
+
+' ### НАБЛЮДАЕМОСТЬ ###
+Rel(gateway, otel_collector, "Метрики/трейсы/логи", "OTLP")
+Rel(svc_booking, otel_collector, "Метрики/трейсы/логи", "OTLP")
+Rel(svc_driver, otel_collector, "Метрики/трейсы/логи", "OTLP")
+Rel(svc_pricing, otel_collector, "Метрики/трейсы/логи", "OTLP")
+Rel(svc_payments, otel_collector, "Метрики/трейсы/логи", "OTLP")
+Rel(svc_payouts, otel_collector, "Метрики/трейсы/логи", "OTLP")
+Rel(svc_notification, otel_collector, "Метрики/трейсы/логи", "OTLP")
+Rel(svc_geography, otel_collector, "Метрики/трейсы/логи", "OTLP")
+Rel(svc_analytics, otel_collector, "Метрики/трейсы/логи", "OTLP")
+Rel(svc_fraud, otel_collector, "Метрики/трейсы/логи", "OTLP")
+Rel(flink, otel_collector, "Метрики job'ов, backpressure", "OTLP")
+Rel(kafka_lag_exporter, kafka_broker, "Читает метрики брокера", "JMX")
+Rel(jmx_exporter, schema_registry, "Собирает метрики", "JMX")
+Rel(postgres_exporter, db_booking, "Собирает метрики", "SQL")
+Rel(postgres_exporter, db_driver, "Собирает метрики", "SQL")
+Rel(postgres_exporter, db_pricing, "Собирает метрики", "SQL")
+Rel(postgres_exporter, db_payments, "Собирает метрики", "SQL")
+Rel(postgres_exporter, db_payouts, "Собирает метрики", "SQL")
+Rel(postgres_exporter, db_notification, "Собирает метрики", "SQL")
+Rel(postgres_exporter, db_geography, "Собирает метрики", "SQL")
+Rel(postgres_exporter, db_fraud, "Собирает метрики", "SQL")
+Rel(redis_exporter, db_cache, "Собирает метрики", "HTTP")
+Rel(es_exporter, db_geo_index, "Собирает метрики", "HTTP")
+
+' Prometheus скрейпит инфраструктурные экспортеры напрямую (pull, без OTel)
+Rel(monitoring, kafka_lag_exporter, "Скрейп метрик", "Prometheus")
+Rel(monitoring, postgres_exporter, "Скрейп метрик", "Prometheus")
+Rel(monitoring, redis_exporter, "Скрейп метрик", "Prometheus")
+Rel(monitoring, es_exporter, "Скрейп метрик", "Prometheus")
+Rel(monitoring, jmx_exporter, "Скрейп метрик", "Prometheus")
+
+' OTel Collector: ClickHouse /metrics + прикладная телеметрия -> Prometheus/Loki/Jaeger
+Rel(otel_collector, db_analytics, "Скрейп метрик", "Prometheus")
+Rel(monitoring, otel_collector, "Скрейп метрик", "Prometheus")
+Rel(otel_collector, loki, "Логи", "Loki")
+Rel(otel_collector, tracing, "Трейсы", "OTLP")
+Rel(grafana, monitoring, "Запрашивает метрики", "PromQL")
+Rel(grafana, loki, "Запрашивает логи", "LogQL")
+Rel(grafana, tracing, "Запрашивает трейсы", "Jaeger API")
+Rel(grafana, alert_manager, "Просмотр алертов/силенсов", "Alertmanager API")
+Rel(monitoring, alert_manager, "Алерты", "Alert Rules")
+Rel(alert_manager, sre_engineer, "Оповещения", "Email/Telegram")
+
+@enduml
