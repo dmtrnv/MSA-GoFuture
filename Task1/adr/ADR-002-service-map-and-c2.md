@@ -42,7 +42,7 @@ Analytics, Fraud, плюс платформенная, SRE, data и инфрас
 | **Payouts Service** | Выплаты водителям и партнёрам | Payments | payouts, balances | Async (события) + sync | Driver, внешние банковские API |
 | **Notification Service** | Доставка push/SMS/email | Notification | devices, templates | Async (события) | Все сервисы (через события) |
 | **Geography Service** | Геопоиск, зоны, маршруты, ETA | Geography | zones, geo_index | Sync (REST/gRPC, низкая задержка) | Booking, Driver, Pricing |
-| **Analytics Service** | Сбор событий, витрины, ML-фичи | Analytics | events, aggregates | Async (события, поток) | Data/ML, BI, Fraud, Pricing |
+| **Analytics Service** | Сбор событий, витрины | Analytics | events, aggregates | Async (события, поток) | Data/ML, BI, Fraud, Pricing |
 | **Fraud Service** | Антифрод, риск-скоринг | Fraud | fraud_rules, risk_scores | Sync (проверка) | Payments, Booking |
 
 ### Принципы границ

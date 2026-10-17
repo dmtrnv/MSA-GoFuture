@@ -1,0 +1,162 @@
+@startuml
+
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+title Схема репликации данных между регионами
+
+' ГЛОБАЛЬНЫЙ СЛОЙ (справочники и деидентифицированная аналитика)
+System_Boundary(b_global, "Глобальный слой (не-PII: справочники, контракты, агрегаты)") {
+    Container(global_control, "Global Control Plane", "Мульти-регион оркестрация", "Деплой, конфигурация, политики, feature flags")
+    ContainerDb(global_ref, "Глобальные справочники", "Replicated DB", "Геозоны, шаблоны правил ценообразования - НЕ PII")
+    Container(schema_registry, "Schema Registry", "Avro", "Контракты событий (backward-compatible)")
+    ContainerDb(global_analytics, "Глобальная аналитика", "ClickHouse/Flink", "Деидентифицированные агрегаты")
+    Container(datalens, "DataLens", "BI Tool", "Отчёты по деидентифицированным данным")
+}
+
+' РЕГИОН base
+System_Boundary(b_base, "Суб-регион base (макро: base; Россия/СНГ)") {
+    Container(base_app, "Stateless-сервисы", "K8s", "API GW, доменные сервисы, Flink")
+    ContainerQueue(base_kafka, "Kafka (regional)", "Apache Kafka", "Region-scoped топики; RF=3, min.insync=2")
+    ContainerDb(base_db, "PostgreSQL primary", "PostgreSQL", "Бизнес-данные региона (PII 152-ФЗ)")
+    ContainerDb(base_db_r, "PostgreSQL HA-реплика", "PostgreSQL", "Синхронная реплика в AZ-наборе")
+    ContainerDb(base_cache, "Redis", "Redis", "Локальный кеш")
+    ContainerDb(base_ch, "ClickHouse", "Analytics", "Региональная аналитика")
+    ContainerDb(base_es, "Геоиндекс", "Elasticsearch", "Мульти-нода в регионе; пересбор из Kafka/БД (без межрегиональной репликации)")
+}
+
+' МАКРО-РЕГИОН SEA
+System_Boundary(b_seasg, "Суб-регион sea-sg (макро: sea; Сингапур)") {
+    Container(seasg_app, "Stateless-сервисы", "K8s", "API GW, доменные сервисы, Flink")
+    ContainerQueue(seasg_kafka, "Kafka (regional)", "Apache Kafka", "Region-scoped топики; RF=3, min.insync=2")
+    ContainerDb(seasg_db, "PostgreSQL primary", "PostgreSQL", "Бизнес-данные + PII Сингапура (primary страны)")
+    ContainerDb(seasg_db_r, "PostgreSQL HA-реплика", "PostgreSQL", "Синхронная реплика в AZ-наборе")
+    ContainerDb(seasg_cache, "Redis", "Redis", "Локальный кеш")
+    ContainerDb(seasg_ch, "ClickHouse", "Analytics", "Региональная аналитика")
+    ContainerDb(seasg_es, "Геоиндекс", "Elasticsearch", "Мульти-нода в регионе; пересбор из Kafka/БД (без межрегиональной репликации)")
+}
+
+System_Boundary(b_sea_id, "Суб-регион sea-id (макро: sea; Индонезия, Джакарта)") {
+    Container(sea_id_app, "Stateless-сервисы", "K8s", "API GW, доменные сервисы, Flink")
+    ContainerQueue(sea_id_kafka, "Kafka (regional)", "Apache Kafka", "Region-scoped топики; RF=3, min.insync=2")
+    ContainerDb(sea_id_db, "PostgreSQL primary", "PostgreSQL", "Бизнес-данные + PII Индонезии, UU PDP (primary страны)")
+    ContainerDb(sea_id_db_r, "PostgreSQL HA-реплика", "PostgreSQL", "Синхронная реплика в AZ-наборе")
+    ContainerDb(sea_id_cache, "Redis", "Redis", "Локальный кеш")
+    ContainerDb(sea_id_ch, "ClickHouse", "Analytics", "Региональная аналитика")
+    ContainerDb(sea_id_es, "Геоиндекс", "Elasticsearch", "Мульти-нода в регионе; пересбор из Kafka/БД (без межрегиональной репликации)")
+}
+
+' МАКРО-РЕГИОН SA
+System_Boundary(b_sabr, "Суб-регион sa-br (макро: sa; Бразилия, Сан-Паулу)") {
+    Container(sabr_app, "Stateless-сервисы", "K8s", "API GW, доменные сервисы, Flink")
+    ContainerQueue(sabr_kafka, "Kafka (regional)", "Apache Kafka", "Region-scoped топики; RF=3, min.insync=2")
+    ContainerDb(sabr_db, "PostgreSQL primary", "PostgreSQL", "Бизнес-данные + PII Бразилии, LGPD (primary страны)")
+    ContainerDb(sabr_db_r, "PostgreSQL HA-реплика", "PostgreSQL", "Синхронная реплика в AZ-наборе")
+    ContainerDb(sabr_cache, "Redis", "Redis", "Локальный кеш")
+    ContainerDb(sabr_ch, "ClickHouse", "Analytics", "Региональная аналитика")
+    ContainerDb(sabr_es, "Геоиндекс", "Elasticsearch", "Мульти-нода в регионе; пересбор из Kafka/БД (без межрегиональной репликации)")
+}
+
+System_Boundary(b_sacl, "Суб-регион sa-cl (макро: sa; Чили, Сантьяго)") {
+    Container(sacl_app, "Stateless-сервисы", "K8s", "API GW, доменные сервисы, Flink")
+    ContainerQueue(sacl_kafka, "Kafka (regional)", "Apache Kafka", "Region-scoped топики; RF=3, min.insync=2")
+    ContainerDb(sacl_db, "PostgreSQL primary", "PostgreSQL", "Бизнес-данные + PII Чили (primary страны)")
+    ContainerDb(sacl_db_r, "PostgreSQL HA-реплика", "PostgreSQL", "Синхронная реплика в AZ-наборе")
+    ContainerDb(sacl_cache, "Redis", "Redis", "Локальный кеш")
+    ContainerDb(sacl_ch, "ClickHouse", "Analytics", "Региональная аналитика")
+    ContainerDb(sacl_es, "Геоиндекс", "Elasticsearch", "Мульти-нода в регионе; пересбор из Kafka/БД (без межрегиональной репликации)")
+}
+
+' STATELESS: БД и КЕШ внутри региона (HA, sync)
+Rel(base_app, base_db, "Чтение/запись", "SQL")
+Rel(base_db, base_db_r, "Синхронная репликация (HA, multi-AZ)", "Streaming replication")
+Rel(base_app, base_cache, "Кеш", "Redis")
+Rel(base_app, base_kafka, "Публикация/потребление событий", "Kafka")
+Rel(base_app, base_ch, "Аналитическая запись/чтение", "SQL")
+Rel(base_app, base_es, "Геопоиск", "HTTP")
+
+Rel(seasg_app, seasg_db, "Чтение/запись", "SQL")
+Rel(seasg_db, seasg_db_r, "Синхронная репликация (HA, multi-AZ)", "Streaming replication")
+Rel(seasg_app, seasg_cache, "Кеш", "Redis")
+Rel(seasg_app, seasg_kafka, "Публикация/потребление событий", "Kafka")
+Rel(seasg_app, seasg_ch, "Аналитическая запись/чтение", "SQL")
+Rel(seasg_app, seasg_es, "Геопоиск", "HTTP")
+
+Rel(sea_id_app, sea_id_db, "Чтение/запись", "SQL")
+Rel(sea_id_db, sea_id_db_r, "Синхронная репликация (HA, multi-AZ)", "Streaming replication")
+Rel(sea_id_app, sea_id_cache, "Кеш", "Redis")
+Rel(sea_id_app, sea_id_kafka, "Публикация/потребление событий", "Kafka")
+Rel(sea_id_app, sea_id_ch, "Аналитическая запись/чтение", "SQL")
+Rel(sea_id_app, sea_id_es, "Геопоиск", "HTTP")
+
+Rel(sabr_app, sabr_db, "Чтение/запись", "SQL")
+Rel(sabr_db, sabr_db_r, "Синхронная репликация (HA, multi-AZ)", "Streaming replication")
+Rel(sabr_app, sabr_cache, "Кеш", "Redis")
+Rel(sabr_app, sabr_kafka, "Публикация/потребление событий", "Kafka")
+Rel(sabr_app, sabr_ch, "Аналитическая запись/чтение", "SQL")
+Rel(sabr_app, sabr_es, "Геопоиск", "HTTP")
+
+Rel(sacl_app, sacl_db, "Чтение/запись", "SQL")
+Rel(sacl_db, sacl_db_r, "Синхронная репликация (HA, multi-AZ)", "Streaming replication")
+Rel(sacl_app, sacl_cache, "Кеш", "Redis")
+Rel(sacl_app, sacl_kafka, "Публикация/потребление событий", "Kafka")
+Rel(sacl_app, sacl_ch, "Аналитическая запись/чтение", "SQL")
+Rel(sacl_app, sacl_es, "Геопоиск", "HTTP")
+
+
+' РЕПЛИКАЦИЯ ВНУТРИ МАКРО-РЕГИОНА (async, пары активных регионов; PII не покидает макро)
+' Оба суб-региона - активные primary для данных своей страны. Стрелка ниже - DR-копия
+' РАЗРЕШЁННОЙ к репликации части (общие/не резидентно-ограниченные данные); резидентные PII
+' могут не реплицироваться и восстанавливаться из бэкапов в стране (UU PDP, LGPD, 152-ФЗ).
+
+Rel(seasg_db, sea_id_db, "Async DR-реплика разрешённой части (в пределах макро sea)", "Streaming replication")
+Rel(sabr_db, sacl_db, "Async DR-реплика разрешённой части (в пределах макро sa)", "Streaming replication")
+
+Rel(seasg_kafka, sea_id_kafka, "Cross-region mirroring (region-scoped + общие топики)", "MirrorMaker / Cluster Linking")
+Rel(sabr_kafka, sacl_kafka, "Cross-region mirroring (region-scoped + общие топики)", "MirrorMaker / Cluster Linking")
+
+' ВАЖНО: PII из base НЕ реплицируется в другие макро-регионы (152-ФЗ, ADR-014/ADR-017).
+' DR для base - резервные копии в стране (+ парный суб-регион base в перспективе), не live-репликация.
+note as N_base_isolation
+  base (152-ФЗ): PII не реплицируется в другие макро-регионы.
+  DR - резервные копии в стране (RPO >= 24 ч); парный суб-регион base - в перспективе.
+end note
+
+note as N_active
+  Модель пары: оба суб-региона АКТИВНЫ (active-active для stateless) и каждый - PRIMARY
+  для данных своей страны. Роль "DR-пара" = принять трафик соседа и/или быть источником
+  восстановления разрешённой части данных; это НЕ пассивный регион и НЕ копия чужой резидентной PII.
+end note
+
+note as N_es
+  Геоиндекс (Elasticsearch) - региональный: мульти-нода в регионе, межрегиональной
+  репликации НЕТ; восстанавливается пересбором из Kafka/БД (ADR-014). Как и Redis,
+  не имеет глобальной реплики.
+end note
+
+' ГЛОБАЛЬНЫЙ СЛОЙ: справочники и аналитика
+Rel(base_app, global_ref, "Читает реплику справочников (read-only)", "Configuration sync")
+Rel(seasg_app, global_ref, "Читает реплику справочников (read-only)", "Configuration sync")
+Rel(sea_id_app, global_ref, "Читает реплику справочников (read-only)", "Configuration sync")
+Rel(sabr_app, global_ref, "Читает реплику справочников (read-only)", "Configuration sync")
+Rel(sacl_app, global_ref, "Читает реплику справочников (read-only)", "Configuration sync")
+
+Rel(base_app, schema_registry, "Регистрирует схемы и получает контракты", "Registry API")
+Rel(seasg_app, schema_registry, "Регистрирует схемы и получает контракты", "Registry API")
+Rel(sea_id_app, schema_registry, "Регистрирует схемы и получает контракты", "Registry API")
+Rel(sabr_app, schema_registry, "Регистрирует схемы и получает контракты", "Registry API")
+Rel(sacl_app, schema_registry, "Регистрирует схемы и получает контракты", "Registry API")
+
+Rel(base_ch, global_analytics, "Деидентифицированные агрегаты", "Batch/Stream")
+Rel(seasg_ch, global_analytics, "Деидентифицированные агрегаты", "Batch/Stream")
+Rel(sea_id_ch, global_analytics, "Деидентифицированные агрегаты", "Batch/Stream")
+Rel(sabr_ch, global_analytics, "Деидентифицированные агрегаты", "Batch/Stream")
+Rel(sacl_ch, global_analytics, "Деидентифицированные агрегаты", "Batch/Stream")
+Rel(global_analytics, datalens, "Аналитические запросы", "SQL")
+
+Rel(global_control, base_app, "Конфигурация/деплой", "Control API")
+Rel(global_control, seasg_app, "Конфигурация/деплой", "Control API")
+Rel(global_control, sea_id_app, "Конфигурация/деплой", "Control API")
+Rel(global_control, sabr_app, "Конфигурация/деплой", "Control API")
+Rel(global_control, sacl_app, "Конфигурация/деплой", "Control API")
+
+@enduml

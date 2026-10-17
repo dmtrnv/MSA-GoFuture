@@ -50,12 +50,12 @@ Pricing, Payments, Payouts, Fraud) и требуют **согласованно�
 
 | Шаг | Триггер | Действие оркестратора | Команда → домен | Ожидаемый результат | Состояние |
 |-----|---------|----------------------|-----------------|---------------------|-----------|
-| **0. Приём заказа** | HTTP `POST /bookings` от пассажира (через API Gateway) | В одной транзакции пишет бронь и `BookingCreated` (outbox) | — | `BookingCreated` | `CREATED` |
+| **0. Приём заказа** | HTTP `POST /bookings` от пассажира (через API Gateway) | В одной транзакции пишет бронь и `BookingCreated` (outbox) | - | `BookingCreated` | `CREATED` |
 | **1. Расчёт цены** | `BookingCreated` | Запрашивает и фиксирует цену | `PriceQuoteRequested` → Pricing | `PriceQuoted` | `PRICING` |
 | **2. Поиск водителя** *(параллельная ветка A)* | `PriceQuoted` | Переводит бронь в `SEARCHING_DRIVER`, публикует `BookingRequested` (факт) и запускает matching | `DriverAssignmentRequested` → Driver | `DriverAssigned` | `SEARCHING_DRIVER` |
 | **3. Авторизация платежа** *(параллельная ветка B)* | `PriceQuoted` (стартует одновременно с шагом 2) | Запрашивает hold средств | `PaymentAuthorizeRequested` → Payments | `PaymentAuthorized` \| `PaymentFailed` | `AUTHORIZING_PAYMENT` |
-| **4. Барьер и подтверждение** | Получены результаты **обоих** шагов 2 и 3 | Ждёт барьера; при успехе обоих подтверждает бронь | `BookingConfirmed` (факт) | — | `CONFIRMED` |
-| **5. Поездка** | `TripStarted` (водитель/пассажир через Booking) | Отслеживает жизненный цикл поездки | — | `TripStarted` → `TripCompleted` | `IN_TRIP` → `TRIP_COMPLETED` |
+| **4. Барьер и подтверждение** | Получены результаты **обоих** шагов 2 и 3 | Ждёт барьера; при успехе обоих подтверждает бронь | `BookingConfirmed` (факт) | - | `CONFIRMED` |
+| **5. Поездка** | `TripStarted` (водитель/пассажир через Booking) | Отслеживает жизненный цикл поездки | - | `TripStarted` → `TripCompleted` | `IN_TRIP` → `TRIP_COMPLETED` |
 | **6. Оплата и выплата** | `TripCompleted` | Захватывает средства и запускает Payout Saga | `PaymentCaptureRequested` → Payments; `PayoutRequested` → Payouts | `PaymentCaptured`; `PayoutInitiated` | `SETTLING` → `DONE` |
 
 **Состояния саги:** `CREATED` → `PRICING` → `SEARCHING_DRIVER`/`AUTHORIZING_PAYMENT` → `CONFIRMED` → `IN_TRIP` → `TRIP_COMPLETED` → `SETTLING` → `DONE`, плюс терминальные `COMPENSATING` и `CANCELLED`/`FAILED`.
@@ -77,7 +77,7 @@ Pricing, Payments, Payouts, Fraud) и требуют **согласованно�
 
 | Шаг | Триггер                   | Действие оркестратора | Команда → домен | Ожидаемый результат | Состояние |
 |-----|---------------------------|----------------------|-----------------|---------------------|-----------|
-| **0. Триггер** | `TripCompleted` (Booking) | Запускает Payout Saga | — | — | `STARTED` |
+| **0. Триггер** | `TripCompleted` (Booking) | Запускает Payout Saga | - | - | `STARTED` |
 | **1. Запрос выплаты** | Старт саги                | Запрашивает создание выплаты | `PayoutRequested` → Payouts | `PayoutInitiated` | `PAYOUT_INITIATED` |
 | **2. Антифрод-проверка** | `PayoutInitiated`         | Запрашивает риск-скоринг выплаты | `FraudCheckRequested` → Fraud | `RiskScored` | `RISK_CHECKING` |
 | **3. Проведение выплаты** | `RiskScored` (без фрода)  | Проводит выплату через банк | Payouts → банк API | `PayoutCompleted` \| `PayoutFailed` | `PAYING_OUT` → `DONE` |

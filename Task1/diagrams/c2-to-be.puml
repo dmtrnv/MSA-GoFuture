@@ -32,7 +32,7 @@ System_Boundary(go_future_system, "GoFuture Platform") {
         Container(svc_payouts, "Payouts Service", "Python", "Выплаты водителям и партнёрам")
         Container(svc_notification, "Notification Service", "Python", "Push/SMS/email уведомления")
         Container(svc_geography, "Geography Service", "Python", "Геопоиск, зоны, маршруты, ETA")
-        Container(svc_analytics, "Analytics Service", "Python", "Сбор событий, витрины, ML-фичи")
+        Container(svc_analytics, "Analytics Service", "Python", "Сбор событий, витрины")
         Container(svc_fraud, "Fraud Service", "Python", "Антифрод и риск-скоринг")
     }
 

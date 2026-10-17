@@ -1,0 +1,96 @@
+@startuml
+
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+AddElementTag("failure", $bgColor="#F8D7DA", $borderColor="#B02A37", $fontColor="#58151C", $legendText="Точка отказа (SPOF / риск)")
+AddElementTag("mechanism", $bgColor="#D1E7DD", $borderColor="#146C43", $fontColor="#0F5132", $legendText="Механизм переключения")
+
+title Диаграмма аварийного переключения - точки отказа и механизмы
+
+' КЛИЕНТЫ
+Person(passenger, "Пассажир", "Мобильное приложение")
+Person(driver, "Водитель", "Мобильное приложение")
+
+' ГЛОБАЛЬНЫЙ ПЕРИМЕТР
+System_Boundary(b_edge, "Глобальный периметр (переключение трафика)") {
+    Container(anycast, "Anycast VIP / Global LB", "L4 Global LB", "Мульти-PoP; withdrawal нездоровых PoP", $tags="mechanism")
+    Container(geodns, "GeoDNS", "Health-based DNS", "Короткий TTL; health-based политики", $tags="mechanism")
+    Container(health, "Health-Check Controller", "Synthetic + L7", "Триггеры переключения, гистерезис", $tags="mechanism")
+}
+
+' МАКРО-РЕГИОН SEA
+System_Boundary(b_sea, "Макро-регион SEA") {
+    Container(seasg_edge, "Шлюз + сервисы (sea-sg)", "Region runtime", "Активный регион SEA (Сингапур; primary Сингапура)", $tags="failure")
+    Container(seaid_dr, "Шлюз + сервисы (sea-id)", "Region runtime", "Активный регион SEA (Индонезия; primary Индонезии) - принимает трафик при отказе sea-sg", $tags="failure")
+}
+
+' МАКРО-РЕГИОН SA
+System_Boundary(b_sa, "Макро-регион SA") {
+    Container(sabr_edge, "Шлюз + сервисы (sa-br)", "Region runtime", "Активный регион SA (Сан-Паулу; primary Бразилии)", $tags="failure")
+    Container(sacl_dr, "Шлюз + сервисы (sa-cl)", "Region runtime", "Активный регион SA (Сантьяго; primary Чили) - принимает трафик при отказе sa-br", $tags="failure")
+}
+
+' РЕГИОН base
+System_Boundary(b_base, "Регион base") {
+    Container(base_edge, "Шлюз + сервисы (base)", "Region runtime", "Базовый рынок; нет регион-пары (план - открытый вопрос)", $tags="failure")
+}
+
+' ДАННЫЕ И СОБЫТИЯ
+System_Boundary(b_data, "Данные и события (репликация)") {
+    ContainerDb(db_primary, "PostgreSQL primary", "PostgreSQL", "Точка отказа записи", $tags="failure")
+    ContainerDb(db_ha, "HA-реплика (sync, multi-AZ)", "PostgreSQL", "Promote при отказе primary", $tags="mechanism")
+    ContainerDb(db_dr, "DR-реплика (async, регион-пара)", "PostgreSQL", "Promote при отказе региона", $tags="mechanism")
+    ContainerQueue(kafka, "Kafka (RF=3, min.insync=2/3)", "Apache Kafka", "Leader election; takeover при отказе региона", $tags="mechanism")
+}
+
+' ВНЕШНИЕ СИСТЕМЫ (с circuit breaker)
+System_Ext(pay, "Платёжный шлюз", "Внешний провайдер", $tags="failure")
+System_Ext(maps, "Картографический сервис", "Внешний провайдер", $tags="failure")
+System_Ext(push, "Push-сервисы", "FCM/APNs/HMS", $tags="failure")
+
+' ТРАФИК: КЛИЕНТЫ -> ПЕРИМЕТР -> РЕГИОНЫ
+Rel_D(passenger, anycast, "Запрос", "HTTPS")
+Rel_D(driver, anycast, "Запрос", "HTTPS")
+Rel(anycast, geodns, "Разрешение здорового региона", "DNS/LB")
+Rel(health, geodns, "Обновление здоровья", "Health API")
+Rel(health, anycast, "Withdrawal нездоровых PoP", "BGP/LB API")
+Rel(anycast, seasg_edge, "Трафик SEA (Сингапур)", "HTTPS")
+Rel(anycast, sabr_edge, "Трафик SA (Сан-Паулу)", "HTTPS")
+Rel(anycast, base_edge, "Трафик base", "HTTPS")
+
+' Failover переключение на DR-пару
+Rel_U(seasg_edge, seaid_dr, "F-02: Failover региона SEA", "Health-based", $tags="mechanism")
+Rel_U(sabr_edge, sacl_dr, "F-02: Failover региона SA", "Health-based", $tags="mechanism")
+
+note as N_base
+  base - единственный суб-регион, регион-пары нет => fallback-ребра нет.
+  Восстановление in-place из бэкапов в стране (RPO >= 24 ч, SLA 99,95 %, ADR-013).
+  PII не переносится между макро-регионами (152-ФЗ) - L-Macro для base неприменим к данным.
+end note
+
+' РЕГИОНЫ -> ДАННЫЕ
+Rel(seasg_edge, db_primary, "Запись/чтение", "SQL")
+Rel(seasg_edge, kafka, "События", "Kafka")
+Rel(sabr_edge, db_primary, "Запись/чтение", "SQL")
+Rel(sabr_edge, kafka, "События", "Kafka")
+
+' Репликация и promote (переключение БД)
+Rel(db_primary, db_ha, "F-03: Promote (sync, multi-AZ)", "Streaming replication", $tags="mechanism")
+Rel(db_ha, db_dr, "F-02: Promote (async, регион-пара)", "Streaming replication", $tags="mechanism")
+
+
+' ВНЕШНИЕ ИНТЕГРАЦИИ (circuit breaker)
+Rel(seasg_edge, pay, "F-08: Circuit breaker → фолбэк", "REST")
+Rel(seasg_edge, maps, "F-09: Circuit breaker → провайдер/кеш", "REST")
+Rel(seasg_edge, push, "F-09: Circuit breaker → retry", "REST")
+
+note as N_ext
+  F-08/F-09 (отказ внешних провайдеров) действуют во ВСЕХ макро-регионах:
+  circuit breaker + regional-фолбэк-провайдер (на диаграмме показан для sea-sg как пример).
+end note
+
+' L-MACRO: уход в другой макро-регион при отказе пары суб-регионов (двусторонний)
+Rel_D(seasg_edge, sabr_edge, "L-Macro: уход SEA -> SA при отказе пары суб-регионов (деградация задержки)", "Policy/Manual")
+Rel_U(sabr_edge, seasg_edge, "L-Macro: обратный уход SA -> SEA при отказе пары суб-регионов", "Policy/Manual")
+
+@enduml
