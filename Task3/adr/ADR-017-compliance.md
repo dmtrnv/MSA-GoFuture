@@ -62,7 +62,7 @@ GoFuture выходит на рынки **Юго-Восточной Азии** �
 | Шифрование | At-rest - ключи per-region (KMS); in-transit - mTLS (ADR-018) |
 | Маскирование/токенизация PII | Токенизация реквизитов, маскирование в аналитике |
 | Аудит | Неизменяемый audit log ≥ 1 год (NFR-C-03), по региону |
-| Хранение и удаление | Политики retention per-region; криптошреддинг для удаления |
+| Хранение и удаление | Политики retention per-region; crypto-shredding для удаления |
 | Изоляция | Региональная сеть, firewall-политики, per-region secret store |
 
 ### 4. Права субъектов (data subject rights)

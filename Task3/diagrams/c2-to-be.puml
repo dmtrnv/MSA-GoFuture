@@ -29,7 +29,7 @@ System_Boundary(go_future_system, "GoFuture Platform") {
     System_Boundary(netsec, "Сетевая безопасность / Zero-trust") {
         Container(firewall, "Firewall / Сегментация", "L3/L4 Firewall", "Least-privilege сетевые политики, сегментация зон")
         Container(ids, "IDS/IPS", "Intrusion Detection/Prevention", "Обнаружение и блокировка сетевых атак")
-        Container(mesh, "Service Mesh", "mTLS / Zero-trust", "Шифрование и взаимная аутентификация сервис-сервис (east-west)")
+        Container(mesh, "Service Mesh", "mTLS / Zero-trust", "Шифрование и взаимная аутентификация сервис-сервис")
     }
 
     ' ### СОБЫТИЙНАЯ ПЛАТФОРМА ###
@@ -133,7 +133,7 @@ Rel(ddos, waf, "Легитимный трафик после фильтраци�
 Rel(waf, bot_protection, "Фильтрация HTTP(S)", "Inline")
 Rel(bot_protection, gateway, "Очищенный трафик", "HTTPS")
 Rel(gateway, firewall, "Сегментация входящего/исходящего трафика", "L3/L4")
-Rel(firewall, mesh, "Внутрирегиональный east-west", "L3/L4")
+Rel(firewall, mesh, "Внутрирегиональный", "L3/L4")
 Rel(firewall, ids, "Мониторинг трафика", "Network")
 
 ' ### ШЛЮЗ -> СЕРВИСЫ (sync, версионирование) ###
