@@ -1,0 +1,167 @@
+@startuml
+' Поток онбординга партнёра-тенанта (ADR-027)
+' Фазы: Request -> Compliance/KYC (approval) -> Design (tier) -> Provision -> Verify -> Activate
+
+title Поток онбординга партнёра-тенанта (GoFuture, мультитенантность)
+
+autonumber
+
+actor "Партнёр\n(prospective -> админ тенанта)" as partner
+participant "Партнёрский портал\n(self-service)" as portal
+participant "API Gateway\n(tenant resolution, authz)" as gw
+participant "Onboarding\nOrchestrator" as orch
+participant "Комплаенс/KYC\n(+ DSR, DPIA)" as comp
+participant "Tenant Registry" as reg
+participant "Provisioning\nOperator" as prov
+participant "Keycloak\n(realm региона)" as kc
+participant "Инфраструктура\n(БД/RLS, Kafka, Redis,\nS3/ES, KMS)" as infra
+participant "Sandbox\n(per суб-регион)" as sbx
+participant "Наблюдаемость\n(SLI/SLO, Probes)" as obs
+participant "SIEM / WORM-аудит" as audit
+participant "Уведомления" as notif
+
+== 0. Bootstrap: регистрация партнёра (pre-tenant) ==
+
+partner -> portal : Self-signup\n(верификация e-mail/телефона)
+portal -> kc : Создать bootstrap-идентичность\n(pre-tenant контур, MFA, без tenant_id)
+note right of kc
+  Bootstrap-аккаунт даёт доступ ТОЛЬКО
+  к своей заявке онбординга и НЕ даёт
+  доступа к бизнес-данным тенантов.
+end note
+kc --> portal : Bootstrap-сессия
+portal -> audit : Аудит: партнёр зарегистрирован
+
+== 1. Заявка (Request) ==
+
+partner -> portal : Заполнить заявку\n(юрлицо, регион, объёмы, треб. изоляции)
+portal -> gw : POST /onboarding/requests\n(OIDC-токен партнёра)
+gw -> gw : Валидация токена/scope,\nопределение региона
+gw -> orch : Создать заявку
+orch -> reg : Черновик тенанта\n(tenantId, subRegion, статус=Draft)
+reg --> orch : tenantId
+orch -> audit : Аудит: заявка создана
+orch -> notif : Уведомить партнёра о старте
+
+== 2. Комплаенс / KYC (Review + approval) ==
+
+orch -> comp : Запустить проверки\n(лицензии, санкции, локальные нормы)
+activate comp
+comp -> comp : Автоматические проверки\n+ DPIA при необходимости
+note right of comp
+  Approval-workflow (ADR-017):
+  комплаенс -> security -> бизнес,
+  SLA-таймеры, версии решений.
+end note
+alt Одобрено
+    comp --> orch : Approved
+else Отклонено
+    comp --> orch : Rejected (причина)
+    orch -> reg : Статус = Rejected
+    orch -> notif : Уведомить партнёра
+    orch -> audit : Аудит: отказ
+    note right of orch : Процесс завершён,\nресурсы не создаются
+else Требуется уточнение
+    comp --> orch : NeedInfo
+    orch -> notif : Запрос документов у партнёра
+end
+deactivate comp
+
+== 3. Решение об изоляции (Design) ==
+
+orch -> orch : Выбор tier: pooled / silo,\nквоты, фич-флаги, локальные интеграции
+orch -> reg : Обновить профиль тенанта\n(tier, quota, config-манифест в Git)
+orch -> audit : Аудит: решение по изоляции
+
+== 4. Провижининг (Provision, идемпотентно / GitOps) ==
+
+orch -> prov : Запустить провижининг\n(декларативный манифест)
+activate prov
+
+prov -> reg : Регистрация ресурсов,\nстатус=Provisioning
+prov -> kc : Создать организацию тенанта,\nOIDC-клиенты, роли, service account
+kc --> prov : tenant_id mapper / client_id
+
+alt tier = pooled
+    prov -> infra : Регистрация tenant_id,\nприменение RLS-политик,\nnamespaces Redis/S3/ES,\nпартиции/ACL Kafka
+else tier = silo
+    prov -> infra : Отдельный инстанс БД,\nотдельные топики,\nper-tenant KMS-ключи, namespace
+end
+
+prov -> infra : Создать per-tenant ключи (KMS),\nпрефиксы/витрины данных
+prov -> obs : Зарегистрировать\nper-tenant SLO-правила и таргеты
+prov -> audit : Аудит каждого шага провижининга
+
+alt Провижининг успешен
+    prov --> orch : Ready
+else Ошибка шага
+    prov -> prov : Компенсация (saga):\nоткат созданных ресурсов
+    prov --> orch : Failed (компенсировано)
+    orch -> reg : Статус = Failed
+    orch -> audit : Аудит: сбой провижининга
+    orch -> notif : Уведомить SRE/партнёра
+end
+deactivate prov
+
+== 5. Верификация (Verify, в sandbox) ==
+
+orch -> sbx : Подготовить приёмочные тесты\n(синтетические данные, суб-регион)
+orch -> obs : Запустить приёмочные проверки
+activate obs
+obs -> sbx : SSO-логин тенанта (Keycloak),\nсоздание тестовой поездки
+obs -> sbx : ТЕСТ ИЗОЛЯЦИИ (API + данные):\nпопытка доступа к данным другого тенанта
+note right of obs
+  Ожидаемо: 403 / пустой результат
+  на обоих уровнях (API и RLS/витрины).
+  Провал -> блокировка активации.
+end note
+obs --> orch : Результат проверок
+deactivate obs
+
+alt Верификация пройдена
+    orch -> reg : Статус = ReadyToActivate
+else Провал (в т.ч. нарушение изоляции)
+    orch -> prov : Компенсация (saga):\nоткат созданных ресурсов
+    activate prov
+    prov -> kc : Отозвать клиентов/сессии/bootstrap-доступ
+    prov -> infra : Дерегистрация ресурсов,\nудаление per-tenant KMS-ключей
+    prov -> audit : Аудит: ресурсы откачены
+    deactivate prov
+    orch -> reg : Статус = Blocked (ресурсы откачены)
+    orch -> audit : Алерт безопасности (SIEM)
+    orch -> notif : Уведомить SRE/партнёра
+end
+
+== 6. Активация (Activate) ==
+
+orch -> reg : Статус = Active,\nвключить квоты/биллинг/мониторинг
+orch -> kc : Активировать клиентов тенанта,\nвыдать API-ключи (через Vault)
+kc --> orch : Доступы готовы
+orch -> notif : Передать партнёру:\nAPI-ключи, документация, SLA
+orch -> audit : Аудит: тенант активирован (WORM)
+note right of orch
+  Техническая часть (Provision ->
+  Verify -> Activate) - часы/дни.
+  Общий срок онбординга 2-4 недели
+  (основное - комплаенс/лицензии).
+end note
+
+== 7. Эксплуатация (Operate) ==
+
+partner -> portal : Изменение конфигурации/квот/ролей
+portal -> gw : Запрос (в пределах потолка прав тенанта)
+gw -> orch : Применить изменение (ревью + аудит)
+orch -> reg : Обновить профиль тенанта
+reg --> partner : Изменение применено
+
+== 8. Offboarding ==
+
+partner -> portal : Запрос на отключение тенанта
+portal -> orch : Запустить offboarding
+orch -> prov : Остановить трафик,\nотозвать ключи/токены
+prov -> kc : Отозвать клиентов/сессии
+prov -> infra : Экспорт данных партнёру,\nудаление per-tenant KMS-ключей\n(crypto-shredding, ADR-025)
+prov -> reg : Статус = Offboarded
+prov -> audit : Аудит: тенант удалён
+
+@enduml

@@ -138,8 +138,8 @@ System_Boundary(go_future_system, "GoFuture Platform") {
 }
 
 ' ### ВНЕШНИЕ СИСТЕМЫ ###
-System_Ext(yandex_pay, "Яндекс Пэй", "Платёжный шлюз")
-System_Ext(yandex_maps, "Яндекс Карты", "Картографический сервис")
+System_Ext(payment_gateway, "Платёжный шлюз", "Внешний провайдер")
+System_Ext(maps_provider, "Картографический сервис", "Внешний провайдер")
 System_Ext(fcm, "FCM", "Push Google")
 System_Ext(apns, "APNs", "Push Apple")
 System_Ext(huawei_push, "Huawei Push Kit", "Push Huawei")
@@ -254,8 +254,8 @@ Rel(datalens, manager, "Бизнес-отчёты", "Dashboards")
 Rel(datalens, accountant, "Финансовые отчёты", "Dashboards")
 
 ' ### ВНЕШНИЕ ИНТЕГРАЦИИ ###
-Rel(svc_payments, yandex_pay, "Платежи", "REST API")
-Rel(svc_geography, yandex_maps, "Геоданные", "REST API")
+Rel(svc_payments, payment_gateway, "Платежи", "REST API")
+Rel(svc_geography, maps_provider, "Геоданные", "REST API")
 Rel(svc_notification, fcm, "Push Android", "REST API")
 Rel(svc_notification, apns, "Push iOS", "REST API")
 Rel(svc_notification, huawei_push, "Push Huawei", "REST API")
