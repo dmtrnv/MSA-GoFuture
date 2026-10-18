@@ -1,0 +1,419 @@
+@startuml
+
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+' ### АКТОРЫ ###
+Person(passenger, "Пассажир", "Заказывает поездки")
+Person(driver, "Водитель", "Принимает заказы, получает выплаты")
+Person(manager, "Корпоративный менеджер", "Управляет счетами")
+Person(accountant, "Бухгалтер", "Контролирует выплаты")
+Person(sre_engineer, "SRE инженер", "Поддерживает надёжность")
+
+System_Boundary(go_future_system, "GoFuture Platform") {
+
+    ' ### КЛИЕНТСКИЕ ПРИЛОЖЕНИЯ ###
+    Container(app_passenger, "Пассажирское приложение", "iOS/Android/Huawei", "Интерфейс пассажира")
+    Container(app_driver, "Водительское приложение", "iOS/Android/Huawei", "Интерфейс водителя")
+    Container(web_portal, "Корпоративный веб-портал", "Web Application", "Управление корпоративными поездками")
+    Container(admin_portal, "Админ-панель", "Web Application", "Операционное управление")
+
+    ' ### ТОЧКА ВХОДА И ЗАЩИТА ПЕРИМЕТРА (в каждом регионе) ###
+    System_Boundary(edge, "Edge / Integration / Защита периметра") {
+        Container(ddos, "DDoS-защита / Scrubbing", "Anti-DDoS", "Поглощение объёмных атак (L3/L4/L7)")
+        Container(waf, "WAF", "Web Application Firewall", "Инъекции, фильтрация HTTP(S)")
+        Container(bot_protection, "Bot-защита", "Bot Mitigation", "Фильтрация автоматизированного абьюза")
+        Container(gateway, "API Gateway / BFF", "Gateway", "Единая точка входа, маршрутизация, версионирование, rate limiting, auth")
+    }
+
+    ' ### СЕТЕВАЯ БЕЗОПАСНОСТЬ / ZERO-TRUST ###
+    System_Boundary(netsec, "Сетевая безопасность / Zero-trust") {
+        Container(firewall, "Firewall / Сегментация", "L3/L4 Firewall", "Least-privilege сетевые политики, сегментация зон")
+        Container(ids, "IDS/IPS", "Intrusion Detection/Prevention", "Обнаружение и блокировка сетевых атак")
+        Container(mesh, "Service Mesh", "mTLS / Zero-trust", "Шифрование и взаимная аутентификация сервис-сервис")
+    }
+
+    ' ### СОБЫТИЙНАЯ ПЛАТФОРМА ###
+    System_Boundary(event_platform, "Событийная платформа") {
+
+        ContainerQueue(kafka_broker, "Kafka Cluster", "Apache Kafka", "Backbone событий; region-aware partitioner; replication=3")
+        Container(schema_registry, "Schema Registry", "Avro", "Контракты событий: регистрация схем продюсерами, выдача schema ID, режим BACKWARD")
+
+        ' Ключевые топики (партиционирование по regionId:aggregateId)
+        System_Boundary(topics, "Ключевые топики Kafka (partition key = regionId:aggregateId)") {
+            ContainerQueue(topic_booking_events, "booking.booking.events.v1", "Kafka Topic", "BookingCreated, BookingConfirmed, TripStarted, TripCompleted, BookingCancelled")
+            ContainerQueue(topic_driver_events, "driver.driver.events.v1", "Kafka Topic", "DriverAssigned, DriverStatusChanged, ShiftStarted/Ended")
+            ContainerQueue(topic_driver_location, "driver.driver.location.v1", "Kafka Topic", "DriverLocationUpdated")
+            ContainerQueue(topic_pricing_events, "pricing.pricing.events.v1", "Kafka Topic", "PriceQuoted, SurgeMultiplierUpdated")
+            ContainerQueue(topic_payments_events, "payments.payment.events.v1", "Kafka Topic", "PaymentAuthorized, PaymentCaptured, PaymentFailed")
+            ContainerQueue(topic_payouts_events, "payouts.payout.events.v1", "Kafka Topic", "PayoutInitiated, PayoutCompleted")
+            ContainerQueue(topic_fraud_events, "fraud.fraud.events.v1", "Kafka Topic", "FraudDetected, RiskScored")
+            ContainerQueue(topic_geography_events, "geography.zone.events.v1", "Kafka Topic", "ZoneUpdated, GeoIndexUpdated, RouteCalculated")
+            ContainerQueue(topic_cdc, "*.cdc.v1", "Kafka Topic", "CDC-изменения (Notification: устройства, шаблоны)")
+            ContainerQueue(topic_commands, "*.commands.v1", "Kafka Topic", "Команды Saga: PaymentAuthorizeRequested, DriverAssignmentRequested")
+            ContainerQueue(topic_retry_dlq, "*.retry / *.dlq", "Kafka Topic", "Ретраи с backoff и Dead Letter")
+        }
+
+        Container(flink, "Stream Processing", "Apache Flink / Python", "Stateful/windowed: surge-цены, hot-zones, сессии поездки")
+    }
+
+    ' ### ДОМЕННЫЕ СЕРВИСЫ ###
+    System_Boundary(services, "Доменные сервисы") {
+        Container(svc_booking, "Booking Service", "Django/Python", "Жизненный цикл поездки, матчинг; содержит компонент Saga Orchestrator (оркестрация саги поездки и выплат, компенсации, таймауты)")
+        Container(svc_driver, "Driver Service", "Django/Python", "Профиль, смены, заработок водителя")
+        Container(svc_pricing, "Pricing Service", "Python", "Расчёт цены, динамическое ценообразование")
+        Container(svc_payments, "Payments Service", "Python", "Приём платежей от пассажиров")
+        Container(svc_payouts, "Payouts Service", "Python", "Выплаты водителям и партнёрам")
+        Container(svc_notification, "Notification Service", "Python", "Push/SMS/email уведомления")
+        Container(svc_geography, "Geography Service", "Python", "Геопоиск, зоны, маршруты, ETA")
+        Container(svc_analytics, "Analytics Service", "Python", "Сбор событий, витрины (легаси; заменяется платформой данных)")
+        Container(svc_fraud, "Fraud Service", "Python", "Антифрод и риск-скоринг")
+    }
+
+    ' ### ХРАНИЛИЩА (database-per-service) ###
+    System_Boundary(data, "Хранилища (database-per-service)") {
+        ContainerDb(db_booking, "БД Booking", "PostgreSQL", "Бронирования, состояние поездки, outbox, saga_state")
+        ContainerDb(db_driver, "БД Driver", "PostgreSQL", "Водители, смены, outbox")
+        ContainerDb(db_pricing, "БД Pricing", "PostgreSQL", "Правила ценообразования, котировки")
+        ContainerDb(db_payments, "БД Payments", "PostgreSQL", "Платежи, транзакции, outbox")
+        ContainerDb(db_payouts, "БД Payouts", "PostgreSQL", "Выплаты, балансы, outbox")
+        ContainerDb(db_notification, "БД Notification", "PostgreSQL", "Устройства, шаблоны")
+        ContainerDb(db_geography, "БД Geography", "PostgreSQL", "Зоны")
+        ContainerDb(db_geo_index, "Геоиндекс", "Elasticsearch", "Геопоиск водителей")
+        ContainerDb(db_fraud, "БД Fraud", "PostgreSQL", "Правила антифрода, риск-скоры")
+        ContainerDb(db_analytics, "Analytics / Gold Store", "ClickHouse", "Regional gold-витрины платформы данных; пока и легаси-запись Analytics Service")
+        ContainerDb(db_cache, "Кеш", "Redis", "Кеш цен, устройств, гео, схем событий; online-признаки (Feature Store)")
+    }
+
+    ' ### ПЛАТФОРМА ДАННЫХ И ML ###
+    System_Boundary(data_ml, "Платформа данных и ML (Lakehouse + ML)") {
+        Container(ingest, "Streaming Ingest", "Apache Flink (Iceberg Sink)", "Сбор доменных событий из Kafka в bronze; дедупликация, токенизация PII, валидация контрактов")
+        Container(cdc, "CDC (Debezium) - точечно", "Debezium", "Данные без доменных событий (Notification: устройства, шаблоны): читает WAL → Kafka → тот же ingest + DQ")
+        ContainerDb(lakehouse, "Lakehouse", "Object Storage (S3) + Apache Iceberg", "Bronze/Silver: сырые и очищенные доменные данные; time travel, эволюция схем, PII-токенизация")
+        ContainerDb(feature_offline, "Feature / Offline (gold)", "Iceberg / Parquet", "Обучающие признаки (point-in-time), материализуются из silver; offline-store для Feast")
+        Container(iceberg_catalog, "Iceberg REST Catalog", "REST Catalog / Metastore", "Метаданные таблиц Iceberg per-region: схемы, snapshots, эволюция; единая точка для Spark/Flink/dbt")
+        Container(batch_transform, "Batch Transform", "Apache Spark", "Batch/backfill: переработка истории, обучающие датасеты, батч-скоринг, агрегаты")
+        Container(dbt, "dbt", "SQL Transform", "Моделирование витрин gold на ClickHouse; единые определения метрик")
+        Container(dq, "Data Quality Engine", "Great Expectations", "Проверки качества на переходе слоёв; карантин дефектных данных")
+        ContainerDb(dq_quarantine, "Карантин данных", "Object Storage / Table", "Изоляция записей, не прошедших DQ; разбор и replay")
+        Container(catalog, "Data Catalog & Lineage", "OpenMetadata", "Каталог, владельцы, классификация PII, сквозной lineage")
+        Container(feature_store, "Feature Store", "Feast", "Offline (Iceberg) + online (Redis) признаки для обучения и инференса")
+        Container(mlflow, "ML Platform / Registry", "MLflow", "Трекинг экспериментов, версии и стадии моделей, артефакты")
+        Container(training, "ML Training", "Python / Spark / GPU", "Обучение моделей: спрос, ценообразование, антифрод; backtests")
+        Container(model_serving, "Model Serving", "KServe", "Онлайн/батч-инференс предсказаний, canary/A-B")
+        Container(airflow, "Orchestration", "Airflow", "DAG: dataset → train → evaluate → register → deploy; batch/backfill, dbt, материализация признаков")
+    }
+
+    ' ### BI И ГЛОБАЛЬНАЯ АНАЛИТИКА ###
+    System_Boundary(bi, "BI и глобальная аналитика") {
+        ContainerDb(global_analytics, "Global Analytics", "ClickHouse", "Кросс-региональные деидентифицированные агрегаты для глобального BI")
+        Container(datalens, "DataLens", "BI Tool", "Дашборды: бизнес-метрики, финансы, антифрод, DQ (региональные + глобальные)")
+    }
+
+    ' ### НАБЛЮДАЕМОСТЬ ###
+    System_Boundary(observability, "Наблюдаемость") {
+        Container(otel_collector, "OpenTelemetry Collector", "OTel", "Прикладная телеметрия: приём OTLP (сервисы, Flink), скрейп ClickHouse /metrics, prometheusexporter")
+        Container(kafka_lag_exporter, "Kafka Metrics Exporter", "Kafka Exporter", "Consumer lag, offset, throughput, партиции")
+        Container(postgres_exporter, "Postgres Exporter", "postgres_exporter", "Метрики всех БД PostgreSQL: connections, replication lag, slow queries")
+        Container(redis_exporter, "Redis Exporter", "redis_exporter", "Метрики Redis: memory, evictions, hit/miss, clients, replication")
+        Container(es_exporter, "Elasticsearch Exporter", "elasticsearch_exporter", "Метрики ES: cluster health, JVM, thread pools, shards, latency")
+        Container(jmx_exporter, "JMX Exporter", "jmx_exporter", "JMX-метрики Schema Registry (JVM): запросы, ошибки, схемы")
+        Container(monitoring, "Prometheus", "Monitoring", "Хранилище метрик; скрейпит инфра-экспортеры напрямую и OTel Collector; SLI/SLO правила")
+        Container(grafana, "Grafana", "Dashboards", "Дашборды: SLO/error budget, lag, DLQ, outbox, Flink")
+        Container(loki, "Loki", "Logs", "Агрегация логов")
+        Container(tracing, "Jaeger", "Distributed Tracing", "Сквозные трейсы событий и саг (OpenTelemetry)")
+        Container(alert_manager, "Alertmanager", "Alerting", "Мультиоконные burn-rate алерты, lag/DLQ/Flink")
+    }
+
+    ' ### БЕЗОПАСНОСТЬ (регионально-распределённая) ###
+    System_Boundary(security, "Безопасность (регионально-распределённая)") {
+        Container(iam, "IAM / SSO", "Identity Management", "OAuth2/OIDC, RBAC, SSO, least privilege")
+        Container(vault, "Vault / Secret Manager", "Secrets Management", "Хранение и ротация секретов (per-region)")
+        Container(kms, "KMS", "Key Management", "Ключи шифрования данных at-rest (per-region)")
+        Container(pii_vault, "Токенизация PII", "Tokenization", "Токенизация/маскирование PII и платёжных данных (PCI DSS)")
+        Container(dsr, "DSR / Data Map", "Subject Rights", "Права субъектов (доступ/исправление/удаление/портируемость); data map субъект→регион; удаление - crypto-shredding per-subject ключа")
+        Container(image_scan, "Скан образов / Admission", "Supply-chain Security", "Проверка уязвимостей образов и политики допуска")
+        Container(siem, "SIEM / Audit", "Security Monitoring", "Корреляция событий безопасности и аномалий")
+        ContainerDb(audit_store, "Неизменяемый аудит-стор", "Object Storage (WORM / Object Lock)", "Append-only аудит-логи, retention >= 1 год, per-region")
+    }
+}
+
+' ### ВНЕШНИЕ СИСТЕМЫ ###
+System_Ext(payment_gateway, "Платёжный шлюз", "Внешний провайдер")
+System_Ext(maps_provider, "Картографический сервис", "Внешний провайдер")
+System_Ext(fcm, "FCM", "Push Google")
+System_Ext(apns, "APNs", "Push Apple")
+System_Ext(huawei_push, "Huawei Push Kit", "Push Huawei")
+System_Ext(bank_api, "API Банка", "Банковские выплаты")
+
+' ### КЛИЕНТЫ -> ШЛЮЗ ###
+Rel(passenger, app_passenger, "Использует")
+Rel(driver, app_driver, "Использует")
+Rel(manager, web_portal, "Использует")
+Rel(accountant, admin_portal, "Использует")
+Rel(app_passenger, ddos, "Использует стабильный публичный контракт", "HTTPS/TLS 1.3")
+Rel(app_driver, ddos, "Использует стабильный публичный контракт", "HTTPS/TLS 1.3")
+Rel(web_portal, ddos, "Использует", "HTTPS/TLS 1.3")
+Rel(admin_portal, ddos, "Использует", "HTTPS/TLS 1.3")
+
+' ### ЗАЩИТА ПЕРИМЕТРА (DDoS -> WAF -> Bot -> Gateway) ###
+Rel(ddos, waf, "Легитимный трафик после фильтрации", "HTTPS")
+Rel(waf, bot_protection, "Фильтрация HTTP(S)", "Inline")
+Rel(bot_protection, gateway, "Очищенный трафик", "HTTPS")
+Rel(gateway, firewall, "Сегментация входящего/исходящего трафика", "L3/L4")
+Rel(firewall, mesh, "Внутрирегиональный", "L3/L4")
+Rel(firewall, ids, "Мониторинг трафика", "Network")
+
+' ### ШЛЮЗ -> СЕРВИСЫ (sync, версионирование) ###
+Rel(gateway, svc_booking, "Вызывает", "REST /v1,/v2")
+Rel(gateway, svc_driver, "Вызывает", "REST /v1,/v2")
+Rel(gateway, svc_pricing, "Вызывает", "gRPC/REST")
+Rel(gateway, svc_payments, "Вызывает", "REST /v1,/v2")
+Rel(gateway, svc_geography, "Вызывает", "gRPC/REST")
+
+' ### SYNC МЕЖДУ СЕРВИСАМИ (критичный путь) ###
+Rel(svc_booking, svc_driver, "Назначение водителя", "REST/gRPC")
+Rel(svc_booking, svc_geography, "Геопоиск/ETA", "gRPC")
+Rel(svc_booking, svc_pricing, "Расчёт цены", "gRPC")
+Rel(svc_payments, svc_fraud, "Проверка транзакции", "REST")
+Rel(svc_payouts, svc_driver, "Данные водителя", "REST/gRPC")
+
+' ### САГА (Saga Orchestrator - компонент Booking Service) ###
+Rel(svc_booking, topic_commands, "Отправляет команды саги", "Kafka")
+Rel(svc_booking, topic_payments_events, "Потребляет результаты шагов саги", "Kafka")
+Rel(svc_booking, topic_pricing_events, "Потребляет результаты шагов саги", "Kafka")
+Rel(svc_booking, topic_driver_events, "Потребляет результаты шагов саги", "Kafka")
+Rel(svc_booking, topic_fraud_events, "Потребляет результаты шагов саги", "Kafka")
+
+' ### ПУБЛИКАЦИЯ: Transactional Outbox -> Kafka ###
+Rel(svc_booking, topic_booking_events, "Публикует (outbox)", "Kafka")
+Rel(svc_driver, topic_driver_events, "Публикует (outbox)", "Kafka")
+Rel(svc_driver, topic_driver_location, "Публикует (outbox)", "Kafka")
+Rel(svc_pricing, topic_pricing_events, "Публикует (outbox)", "Kafka")
+Rel(svc_payments, topic_payments_events, "Публикует (outbox)", "Kafka")
+Rel(svc_payouts, topic_payouts_events, "Публикует (outbox)", "Kafka")
+Rel(svc_fraud, topic_fraud_events, "Публикует (outbox)", "Kafka")
+Rel(svc_geography, topic_geography_events, "Публикует (outbox)", "Kafka")
+
+' ### ПОТРЕБЛЕНИЕ: Kafka -> сервисы (хореография) ###
+Rel(svc_notification, topic_booking_events, "Потребляет", "Kafka")
+Rel(svc_notification, topic_driver_events, "Потребляет", "Kafka")
+Rel(svc_notification, topic_payouts_events, "Потребляет", "Kafka")
+Rel(svc_analytics, topic_booking_events, "Потребляет", "Kafka")
+Rel(svc_analytics, topic_driver_events, "Потребляет", "Kafka")
+Rel(svc_analytics, topic_driver_location, "Потребляет", "Kafka")
+Rel(svc_analytics, topic_pricing_events, "Потребляет", "Kafka")
+Rel(svc_analytics, topic_payments_events, "Потребляет", "Kafka")
+Rel(svc_analytics, topic_payouts_events, "Потребляет", "Kafka")
+Rel(svc_analytics, topic_fraud_events, "Потребляет", "Kafka")
+Rel(svc_fraud, topic_booking_events, "Потребляет", "Kafka")
+Rel(svc_fraud, topic_payments_events, "Потребляет", "Kafka")
+Rel(svc_payouts, topic_payments_events, "Потребляет", "Kafka")
+Rel(svc_payouts, topic_driver_events, "Потребляет", "Kafka")
+Rel(svc_geography, topic_driver_location, "Потребляет", "Kafka")
+Rel(svc_payments, topic_fraud_events, "Потребляет", "Kafka")
+Rel(svc_driver, topic_commands, "Потребляет команды matching", "Kafka")
+
+' ### ПОТОКОВАЯ ОБРАБОТКА ###
+Rel(flink, topic_driver_location, "Потребляет гео-поток", "Kafka")
+Rel(flink, topic_booking_events, "Потребляет события брони (спрос)", "Kafka")
+Rel(flink, topic_driver_events, "Потребляет статус/онлайн водителей (предложение)", "Kafka")
+Rel(flink, topic_pricing_events, "Публикует SurgeMultiplierUpdated", "Kafka")
+
+' ### РЕГИСТР СХЕМ ###
+' Клиенты (продюсеры регистрируют схему и получают schema ID; потребители резолвят её по ID и кешируют)
+Rel(services, schema_registry, "Регистрирует схемы и получает их по schema ID", "Registry API")
+Rel(flink, schema_registry, "Резолвит входящие, регистрирует SurgeMultiplierUpdated", "Registry API")
+
+' ### СЕРВИСЫ -> ХРАНИЛИЩА ###
+Rel(svc_booking, db_booking, "Читает и пишет", "ORM/SQL")
+Rel(svc_driver, db_driver, "Читает и пишет", "ORM/SQL")
+Rel(svc_pricing, db_pricing, "Читает и пишет", "SQL")
+Rel(svc_pricing, db_cache, "Кеш цен, схем событий")
+Rel(svc_payments, db_payments, "Читает и пишет", "SQL")
+Rel(svc_payouts, db_payouts, "Читает и пишет", "SQL")
+Rel(svc_notification, db_notification, "Читает и пишет", "SQL")
+Rel(svc_notification, db_cache, "Кеш устройств, схем событий")
+Rel(svc_geography, db_geography, "Читает и пишет", "SQL")
+Rel(svc_geography, db_geo_index, "Геопоиск")
+Rel(svc_geography, db_cache, "Кеш гео, схем событий")
+Rel(svc_fraud, db_fraud, "Читает и пишет", "SQL")
+Rel(svc_analytics, db_analytics, "Аналитическая запись (легаси)")
+
+' ### КЕШ СХЕМ СОБЫТИЙ (сервисы, ходящие в Schema Registry, кешируют схемы в Redis) ###
+Rel(svc_booking, db_cache, "Кеш схем событий")
+Rel(svc_driver, db_cache, "Кеш схем событий")
+Rel(svc_payments, db_cache, "Кеш схем событий")
+Rel(svc_payouts, db_cache, "Кеш схем событий")
+Rel(svc_fraud, db_cache, "Кеш схем событий")
+Rel(svc_analytics, db_cache, "Кеш схем событий")
+
+' ### BI (DataLens) ###
+Rel(db_analytics, datalens, "Региональные gold-витрины (SQL/RLS)", "SQL")
+Rel(global_analytics, datalens, "Глобальные деидентифицированные агрегаты", "SQL/RLS")
+Rel(datalens, manager, "Бизнес-отчёты", "Dashboards")
+Rel(datalens, accountant, "Финансовые отчёты", "Dashboards")
+
+' ### ВНЕШНИЕ ИНТЕГРАЦИИ ###
+Rel(svc_payments, payment_gateway, "Платежи", "REST API")
+Rel(svc_geography, maps_provider, "Геоданные", "REST API")
+Rel(svc_notification, fcm, "Push Android", "REST API")
+Rel(svc_notification, apns, "Push iOS", "REST API")
+Rel(svc_notification, huawei_push, "Push Huawei", "REST API")
+Rel(svc_payouts, bank_api, "Выплаты", "REST API")
+
+' ### НАБЛЮДАЕМОСТЬ ###
+Rel(gateway, otel_collector, "Метрики/трейсы/логи", "OTLP")
+Rel(svc_booking, otel_collector, "Метрики/трейсы/логи", "OTLP")
+Rel(svc_driver, otel_collector, "Метрики/трейсы/логи", "OTLP")
+Rel(svc_pricing, otel_collector, "Метрики/трейсы/логи", "OTLP")
+Rel(svc_payments, otel_collector, "Метрики/трейсы/логи", "OTLP")
+Rel(svc_payouts, otel_collector, "Метрики/трейсы/логи", "OTLP")
+Rel(svc_notification, otel_collector, "Метрики/трейсы/логи", "OTLP")
+Rel(svc_geography, otel_collector, "Метрики/трейсы/логи", "OTLP")
+Rel(svc_analytics, otel_collector, "Метрики/трейсы/логи", "OTLP")
+Rel(svc_fraud, otel_collector, "Метрики/трейсы/логи", "OTLP")
+Rel(flink, otel_collector, "Метрики job'ов, backpressure", "OTLP")
+Rel(kafka_lag_exporter, kafka_broker, "Читает метрики брокера", "JMX")
+Rel(jmx_exporter, schema_registry, "Собирает метрики", "JMX")
+Rel(postgres_exporter, db_booking, "Собирает метрики", "SQL")
+Rel(postgres_exporter, db_driver, "Собирает метрики", "SQL")
+Rel(postgres_exporter, db_pricing, "Собирает метрики", "SQL")
+Rel(postgres_exporter, db_payments, "Собирает метрики", "SQL")
+Rel(postgres_exporter, db_payouts, "Собирает метрики", "SQL")
+Rel(postgres_exporter, db_notification, "Собирает метрики", "SQL")
+Rel(postgres_exporter, db_geography, "Собирает метрики", "SQL")
+Rel(postgres_exporter, db_fraud, "Собирает метрики", "SQL")
+Rel(redis_exporter, db_cache, "Собирает метрики", "HTTP")
+Rel(es_exporter, db_geo_index, "Собирает метрики", "HTTP")
+
+' Prometheus скрейпит инфраструктурные экспортеры напрямую (pull, без OTel)
+Rel(monitoring, kafka_lag_exporter, "Скрейп метрик", "Prometheus")
+Rel(monitoring, postgres_exporter, "Скрейп метрик", "Prometheus")
+Rel(monitoring, redis_exporter, "Скрейп метрик", "Prometheus")
+Rel(monitoring, es_exporter, "Скрейп метрик", "Prometheus")
+Rel(monitoring, jmx_exporter, "Скрейп метрик", "Prometheus")
+
+' OTel Collector: ClickHouse /metrics + прикладная телеметрия -> Prometheus/Loki/Jaeger
+Rel(otel_collector, db_analytics, "Скрейп метрик", "Prometheus")
+Rel(monitoring, otel_collector, "Скрейп метрик", "Prometheus")
+Rel(otel_collector, loki, "Логи", "Loki")
+Rel(otel_collector, tracing, "Трейсы", "OTLP")
+Rel(grafana, monitoring, "Запрашивает метрики", "PromQL")
+Rel(grafana, loki, "Запрашивает логи", "LogQL")
+Rel(grafana, tracing, "Запрашивает трейсы", "Jaeger API")
+Rel(grafana, alert_manager, "Просмотр алертов/силенсов", "Alertmanager API")
+Rel(monitoring, alert_manager, "Алерты", "Alert Rules")
+Rel(alert_manager, sre_engineer, "Оповещения", "Email/Telegram")
+
+' ### БЕЗОПАСНОСТЬ ###
+' Идентификация и доступ
+Rel(gateway, iam, "Проверка токена и прав", "OAuth2/OIDC")
+Rel(services, iam, "Аутентификация/авторизация (RBAC)", "OIDC")
+
+' Zero-trust: межсервисный трафик через mTLS
+Rel(services, mesh, "Весь межсервисный трафик", "mTLS")
+Rel(gateway, mesh, "Внутренние вызовы", "mTLS")
+Rel(data_ml, mesh, "Трафик компонентов данных/ML (ingest, lakehouse, ML, serving)", "mTLS")
+
+' Секреты и ключи
+Rel(services, vault, "Получение секретов (ротация <= 90 дней)", "Vault API")
+Rel(services, kms, "Ключи шифрования", "KMS API")
+Rel(data, kms, "Шифрование данных at-rest (per-region)", "KMS API")
+
+' Защита PII и платёжных данных
+Rel(svc_payments, pii_vault, "Токенизация карт и PII", "PCI DSS")
+Rel(svc_analytics, pii_vault, "Маскирование перед аналитикой", "API")
+
+' Права субъектов (DSR) и crypto-shredding
+Rel(gateway, dsr, "Запросы субъектов (DSR)", "REST")
+Rel(dsr, pii_vault, "Удаление = crypto-shredding per-subject ключа", "API")
+Rel(dsr, lakehouse, "Скоуп удаления: bronze/silver", "API")
+Rel(dsr, db_analytics, "Скоуп удаления: gold", "API")
+Rel(dsr, feature_store, "Скоуп удаления: признаки", "API")
+
+' Supply-chain: допуск образов в рантайм
+Rel(image_scan, services, "Admission control образов", "Policy")
+
+' SIEM / аудит
+Rel(waf, siem, "События WAF", "Syslog")
+Rel(ids, siem, "Сетевые аномалии/атаки", "Syslog")
+Rel(mesh, siem, "События mTLS/сервисов", "OTLP")
+Rel(gateway, siem, "Аудит доступа", "Logs")
+Rel(services, siem, "Аудит операций", "Logs")
+Rel(siem, audit_store, "Архивирует аудит-события (WORM, >= 1 год)", "S3 Object Lock / API")
+Rel(siem, otel_collector, "Логи аудита (операционный поиск)", "OTLP")
+
+' ### СБОР ДАННЫХ: Kafka -> Ingest -> Lakehouse ###
+Rel(ingest, topic_booking_events, "Потребляет", "Kafka")
+Rel(ingest, topic_driver_events, "Потребляет", "Kafka")
+Rel(ingest, topic_driver_location, "Потребляет", "Kafka")
+Rel(ingest, topic_pricing_events, "Потребляет", "Kafka")
+Rel(ingest, topic_payments_events, "Потребляет", "Kafka")
+Rel(ingest, topic_payouts_events, "Потребляет", "Kafka")
+Rel(ingest, topic_fraud_events, "Потребляет", "Kafka")
+Rel(ingest, topic_geography_events, "Потребляет", "Kafka")
+Rel(ingest, topic_cdc, "Потребляет CDC (тот же ingest + DQ)", "Kafka")
+Rel(cdc, db_notification, "Logical replication (WAL): устройства, шаблоны", "Debezium")
+Rel(cdc, topic_cdc, "Публикует CDC-изменения", "Kafka")
+Rel(ingest, schema_registry, "Резолвит схемы доменных событий (CDC-конверт - нативно)", "Registry API")
+Rel(ingest, lakehouse, "Пишет bronze (сырые данные, immutable)", "Iceberg/S3")
+Rel(ingest, pii_vault, "Токенизация PII на входе", "API")
+Rel(ingest, topic_retry_dlq, "Нечитаемые сообщения (DLQ)", "Kafka")
+Rel(flink, lakehouse, "Пишет silver и потоковые агрегаты", "Iceberg/S3")
+
+' ### КАТАЛОГ ICEBERG (метаданные таблиц, per-region) ###
+Rel(ingest, iceberg_catalog, "Регистрирует метаданные таблиц", "REST")
+Rel(flink, iceberg_catalog, "Метаданные таблиц silver", "REST")
+Rel(batch_transform, iceberg_catalog, "Читает/пишет метаданные таблиц", "REST")
+Rel(dbt, iceberg_catalog, "Резолвит таблицы silver", "REST")
+Rel(catalog, iceberg_catalog, "Импортирует метаданные таблиц/lineage", "API")
+
+' ### ОБРАБОТКА ДАННЫХ ###
+Rel(batch_transform, lakehouse, "Читает/пишет слои, backfill", "Spark/S3")
+Rel(batch_transform, feature_offline, "Материализует offline-признаки (gold)", "Spark/Iceberg")
+Rel(batch_transform, mlflow, "Загружает модель для батч-скоринга", "MLflow Registry")
+Rel(batch_transform, db_analytics, "Грузит агрегаты/витрины и батч-предсказания (gold)", "SQL")
+Rel(dbt, lakehouse, "Читает silver", "SQL/Iceberg")
+Rel(dbt, db_analytics, "Моделирует витрины gold", "SQL")
+Rel(db_analytics, global_analytics, "Только деидентифицированные агрегаты (cross-region)", "Replication")
+Rel(airflow, batch_transform, "Оркестрирует batch/backfill из bronze", "API")
+Rel(airflow, dbt, "Запускает трансформации", "CLI")
+
+' ### КАЧЕСТВО ДАННЫХ / GOVERNANCE ###
+Rel(dq, lakehouse, "Проверяет слои (ingest/silver)", "GX")
+Rel(dq, feature_offline, "Проверки признаков (training-serving skew, point-in-time)", "GX")
+Rel(dq, db_analytics, "Проверяет витрины gold", "SQL")
+Rel(dq, global_analytics, "Guardrail: запрет PII в глобальном слое", "GX/SQL")
+Rel(dq, dq_quarantine, "Изолирует дефектные записи")
+Rel(dq, otel_collector, "DQ-метрики", "OTLP")
+Rel(catalog, lakehouse, "Индексирует метаданные/lineage", "API")
+Rel(catalog, db_analytics, "Индексирует метаданные/lineage", "API")
+Rel(catalog, global_analytics, "Индексирует глобальный слой/lineage", "API")
+
+' ### ML ПЛАТФОРМА ###
+Rel(feature_store, feature_offline, "Offline store (признаки, point-in-time)", "Iceberg")
+Rel(feature_store, db_cache, "Online store (признаки)", "Redis")
+Rel(training, feature_store, "Обучающие признаки (point-in-time)", "Feast SDK")
+Rel(training, lakehouse, "Обучающие датасеты", "S3")
+Rel(training, mlflow, "Логирует эксперименты и модели", "MLflow API")
+Rel(training, pii_vault, "Деидентификация для глобального обучения", "API")
+Rel(airflow, training, "Оркестрирует обучение", "API")
+Rel(airflow, feature_store, "Материализация online-признаков", "Feast API")
+Rel(mlflow, lakehouse, "Артефакты моделей и датасетов", "S3")
+Rel(model_serving, mlflow, "Загружает модели", "MLflow Registry")
+Rel(model_serving, feature_store, "Online-признаки", "Feast API")
+Rel(model_serving, lakehouse, "Логи предсказаний (feedback loop)", "S3/Iceberg")
+
+' ### ПОТРЕБЛЕНИЕ ПРЕДСКАЗАНИЙ СЕРВИСАМИ ###
+Rel(svc_pricing, model_serving, "Предсказание динамической цены", "gRPC/REST")
+Rel(svc_fraud, model_serving, "Риск-скор транзакции", "gRPC/REST")
+Rel(svc_booking, model_serving, "Прогноз спроса/матчинг", "gRPC/REST")
+
+' ### НАБЛЮДАЕМОСТЬ ПЛАТФОРМЫ ДАННЫХ/ML ###
+Rel(ingest, otel_collector, "Метрики/трейсы/логи", "OTLP")
+Rel(model_serving, otel_collector, "Метрики инференса/дрейфа", "OTLP")
+Rel(dbt, otel_collector, "Логи/метрики пайплайнов", "OTLP")
+Rel(training, otel_collector, "Метрики обучения", "OTLP")
+Rel(catalog, otel_collector, "Логи каталога", "OTLP")
+
+@enduml
