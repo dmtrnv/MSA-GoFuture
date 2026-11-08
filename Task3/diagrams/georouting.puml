@@ -1,0 +1,69 @@
+@startuml
+
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+title Геомаршрутизация пользователей к ближайшему региону
+
+' КЛИЕНТЫ
+Person(passenger, "Пассажир", "Мобильное приложение")
+Person(driver, "Водитель", "Мобильное приложение")
+Person(corp, "Корпоративный клиент", "Веб-портал")
+
+' ГЛОБАЛЬНЫЙ ПЕРИМЕТР (слой маршрутизации)
+System_Boundary(b_edge, "Глобальный периметр (маршрутизация)") {
+    Container(anycast, "Anycast VIP / Global LB", "L4 Global LB", "Единый глобальный IP, поглощение DDoS (L3/L4), withdrawal нездоровых PoP; регион НЕ выбирает")
+    Container(geodns, "GeoDNS", "Health-based DNS", "Latency/geo-политики, резидентность, короткий TTL")
+    Container(traffic_policy, "Traffic Policy Engine", "Global LB policy", "Выбор региона: резидентность → задержка → здоровье → ёмкость → аффинность поездки")
+    Container(health, "Health-Check Controller", "Synthetic + L7 пробы", "Активные/пассивные пробы, агрегация здоровья регионов")
+}
+
+' РЕГИОНАЛЬНЫЕ ТОЧКИ ВХОДА (L7-шлюз + WAF)
+System_Boundary(b_sea, "Макро-регион SEA") {
+    Container(edge_seasg, "L7 API Gateway + WAF (sea-sg)", "Gateway/WAF", "Терминация TLS, auth, rate limiting, защита периметра")
+    Container(edge_sea_id, "L7 API Gateway + WAF (sea-id)", "Gateway/WAF", "Активный регион (primary Индонезии); DR-пара для sea-sg; терминация TLS, auth, rate limiting")
+}
+
+System_Boundary(b_sa, "Макро-регион SA") {
+    Container(edge_sabr, "L7 API Gateway + WAF (sa-br)", "Gateway/WAF", "Терминация TLS, auth, rate limiting, защита периметра")
+    Container(edge_sacl, "L7 API Gateway + WAF (sa-cl)", "Gateway/WAF", "Терминация TLS, auth, rate limiting, защита периметра")
+}
+
+System_Boundary(b_base, "Суб-регион base") {
+    Container(edge_base, "L7 API Gateway + WAF (base)", "Gateway/WAF", "Терминация TLS, auth, rate limiting, защита периметра")
+}
+
+' РЕГИОНАЛЬНЫЕ СЕРВИСЫ
+System_Boundary(b_svc, "Доменные сервисы (активны во всех регионах)") {
+    Container(services, "Региональные сервисы", "K8s", "Booking, Driver, Pricing, Payments, Payouts, Geography, Fraud, Notification")
+}
+
+' КЛИЕНТЫ -> ГЛОБАЛЬНЫЙ ПЕРИМЕТР
+Rel_D(passenger, anycast, "Запрос (ближайший регион)", "HTTPS / TLS 1.3")
+Rel_D(driver, anycast, "Запрос (ближайший регион)", "HTTPS / TLS 1.3")
+Rel_D(corp, anycast, "Запрос (ближайший регион)", "HTTPS / TLS 1.3")
+
+' Политика выбора региона
+Rel(anycast, geodns, "Разрешение ближайшего здорового региона", "DNS/LB")
+Rel(geodns, traffic_policy, "Запрос политики региона", "Policy API")
+Rel(health, geodns, "Обновление здоровья регионов", "Health API")
+Rel(health, anycast, "Withdrawal нездоровых PoP", "BGP/LB API")
+
+' МАРШРУТИЗАЦИЯ В РЕГИОНЫ
+Rel(anycast, edge_seasg, "Трафик региона SEA (Сингапур)", "HTTPS")
+Rel(anycast, edge_sea_id, "Трафик региона SEA (Индонезия)", "HTTPS")
+Rel(anycast, edge_sabr, "Трафик региона SA (Бразилия)", "HTTPS")
+Rel(anycast, edge_sacl, "Трафик региона SA (Чили)", "HTTPS")
+Rel(anycast, edge_base, "Трафик базового региона", "HTTPS")
+
+' Failover на резервный вход макро-региона
+Rel_U(edge_seasg, edge_sea_id, "Failover при недоступности региона", "Health-based")
+Rel_U(edge_sabr, edge_sacl, "Failover при недоступности региона", "Health-based")
+
+' ШЛЮЗ -> СЕРВИСЫ (внутри региона)
+Rel(edge_seasg, services, "Маршрутизация запросов", "REST/gRPC")
+Rel(edge_sea_id, services, "Маршрутизация запросов", "REST/gRPC")
+Rel(edge_sabr, services, "Маршрутизация запросов", "REST/gRPC")
+Rel(edge_sacl, services, "Маршрутизация запросов", "REST/gRPC")
+Rel(edge_base, services, "Маршрутизация запросов", "REST/gRPC")
+
+@enduml
